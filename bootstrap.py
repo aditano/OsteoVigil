@@ -8,10 +8,17 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 
 MIN_PYTHON = (3, 11)
 REPO_ROOT = Path(__file__).resolve().parent
+SRC_DIR = REPO_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from cpt_predictor.utils.febio_manager import ensure_febio_available
+
 REQUIREMENTS_FILE = REPO_ROOT / "requirements.txt"
 VENV_DIR = REPO_ROOT / ".venv"
 VENV_PYTHON = VENV_DIR / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
@@ -59,6 +66,28 @@ def ensure_dependencies() -> None:
     REQ_STAMP.touch()
 
 
+def ensure_febio(force_reinstall: bool = False) -> Optional[Path]:
+    if os.getenv("OSTEOVIGIL_SKIP_FEBIO_BOOTSTRAP", "").strip().lower() in {"1", "true", "yes"}:
+        print("[bootstrap] Skipping automatic FEBio install because OSTEOVIGIL_SKIP_FEBIO_BOOTSTRAP is set.")
+        return None
+
+    try:
+        febio_exe = ensure_febio_available(
+            python_executable=Path(sys.executable),
+            repo_root=REPO_ROOT,
+            force_reinstall=force_reinstall,
+            prefer_release_assets=True,
+            verbose=True,
+        )
+    except Exception as exc:
+        print(f"[bootstrap] Warning: automatic FEBio setup failed: {exc}")
+        print("[bootstrap] Continuing with the built-in surrogate solver fallback.")
+        return None
+
+    print(f"[bootstrap] FEBio is ready at {febio_exe}")
+    return febio_exe
+
+
 def launch_command(entrypoint: str, entry_args: list[str]) -> list[str]:
     if entrypoint == "desktop":
         return [str(VENV_PYTHON), str(REPO_ROOT / "desktop_app.py"), *entry_args]
@@ -76,7 +105,7 @@ def launch_command(entrypoint: str, entry_args: list[str]) -> list[str]:
     raise ValueError(f"Unsupported entrypoint: {entrypoint}")
 
 
-def parse_args() -> tuple[str, list[str]]:
+def parse_args() -> tuple[str, bool, list[str]]:
     parser = argparse.ArgumentParser(
         description="Create .venv, install dependencies, and launch OsteoVigil."
     )
@@ -85,6 +114,11 @@ def parse_args() -> tuple[str, list[str]]:
         choices=("desktop", "cli", "streamlit"),
         default="desktop",
         help="Application entrypoint to launch after bootstrap completes.",
+    )
+    parser.add_argument(
+        "--force-febio-reinstall",
+        action="store_true",
+        help="Force a fresh FEBio auto-install attempt before launch.",
     )
     parser.add_argument(
         "entry_args",
@@ -96,22 +130,29 @@ def parse_args() -> tuple[str, list[str]]:
     entry_args = args.entry_args
     if entry_args[:1] == ["--"]:
         entry_args = entry_args[1:]
-    return args.entrypoint, entry_args
+    return args.entrypoint, bool(args.force_febio_reinstall), entry_args
 
 
 def main() -> int:
-    entrypoint, entry_args = parse_args()
+    entrypoint, force_febio_reinstall, entry_args = parse_args()
     ensure_supported_python()
     ensure_virtualenv()
     ensure_dependencies()
 
     if Path(sys.executable).resolve() != VENV_PYTHON.resolve():
         relaunch = [str(VENV_PYTHON), str(REPO_ROOT / "bootstrap.py"), "--entrypoint", entrypoint]
+        if force_febio_reinstall:
+            relaunch.append("--force-febio-reinstall")
         if entry_args:
             relaunch.extend(["--", *entry_args])
         os.execv(str(VENV_PYTHON), relaunch)
 
-    subprocess.check_call(launch_command(entrypoint, entry_args), cwd=REPO_ROOT)
+    febio_exe = ensure_febio(force_reinstall=force_febio_reinstall)
+    launch_env = os.environ.copy()
+    if febio_exe:
+        launch_env["FEBIO_EXE"] = str(febio_exe)
+
+    subprocess.check_call(launch_command(entrypoint, entry_args), cwd=REPO_ROOT, env=launch_env)
     return 0
 
 

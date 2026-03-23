@@ -145,10 +145,15 @@ This file is the living handoff/status document for the `OsteoVigil` project. It
   - `streamlit_app.py`
 - Added desktop launchers that bootstrap `.venv` and install `requirements.txt` automatically on first run:
   - `bootstrap.py`
+  - `install_febio.py`
   - `launch_osteovigil.command`
   - `launch_osteovigil.bat`
 - Updated the PyQt desktop app so bundled demo mode can be toggled on, a demo case can be selected, and the manual DICOM/brace inputs are disabled while demo mode is active:
   - `desktop_app.py`
+- Added a repo-local FEBio manager that can auto-download or build FEBio under `.third_party/febio/` and expose it to bootstrap and runtime resolution:
+  - `src/cpt_predictor/utils/febio_manager.py`
+  - `install_febio.py`
+  - `tests/test_febio_manager.py`
 
 ### Tests
 
@@ -177,6 +182,9 @@ PYTHONPYCACHEPREFIX=/tmp/osteovigil_pycache python3 -m compileall src tests main
 - The repo now has a single-command bootstrap path: `python bootstrap.py`
 - `bootstrap.py` now fails fast with a clear error if the caller uses Python older than 3.11.
 - The bundled demo folders referenced by the desktop app exist on disk and were previously validated through the DICOM loader.
+- The simulator can now resolve a repo-managed FEBio executable from `.third_party/febio/` in addition to `FEBIO_EXE` and `PATH`.
+- `bootstrap.py --help` and `install_febio.py --help` both run successfully under Python 3.12.
+- Syntax compilation passed for `bootstrap.py`, `install_febio.py`, `src/cpt_predictor/utils/febio_manager.py`, `src/cpt_predictor/simulator.py`, and `tests/test_febio_manager.py` under Python 3.12.
 
 ### Not yet verified
 
@@ -186,6 +194,7 @@ PYTHONPYCACHEPREFIX=/tmp/osteovigil_pycache python3 -m compileall src tests main
 - The Streamlit app has not been interactively exercised here.
 - The full demo pipeline has not been run with all scientific dependencies installed.
 - FEBio execution has not been validated here.
+- The new automated FEBio installer has not been exercised end-to-end against the live GitHub network in this sandbox.
 - Real patient DICOM input has not been tested here.
 
 ## Current State
@@ -196,16 +205,16 @@ The codebase is scaffolded and integrated, and the project is ready for real loc
 
 ### Immediate next steps
 
-1. Create a clean Python 3.11 or 3.12 virtual environment.
-2. Install all pinned dependencies from `requirements.txt`.
+1. Run `python bootstrap.py` on a machine with Python 3.11 or 3.12.
+2. Confirm the bootstrap path installs pinned Python dependencies and attempts the managed FEBio install.
 3. Run `pytest`.
 4. Run a demo pipeline using synthetic data.
 5. Run the Streamlit UI and verify the basic user workflow.
 
 ### Simulation validation
 
-1. Install FEBio locally.
-2. Set `FEBIO_EXE` or add FEBio to `PATH`.
+1. Validate the new managed FEBio installer against the live GitHub network on macOS, Windows, and Linux.
+2. If needed, fall back to setting `FEBIO_EXE` or adding FEBio to `PATH`.
 3. Run the pipeline with FEBio enabled.
 4. Compare FEBio mode against surrogate mode outputs on the same synthetic case.
 
@@ -331,6 +340,12 @@ python main.py --dicom-dir /path/to/dicom --brace-stl /path/to/brace.stl --outpu
 ```
 
 ### FEBio setup
+
+```bash
+python install_febio.py
+```
+
+Manual override:
 
 ```bash
 export FEBIO_EXE=/absolute/path/to/febio4

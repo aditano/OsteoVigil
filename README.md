@@ -172,9 +172,13 @@ Each agent has a role, goal, backstory, handoff contract, and pipeline stage fun
 pip install -r requirements.txt
 ```
 
-5. Download FEBio from [febio.org/downloads](https://febio.org/downloads/) and either:
-   - add the executable to your `PATH`, or
-   - set `FEBIO_EXE=/absolute/path/to/febio4`.
+5. Optional: run the local FEBio installer if you want to provision FEBio before launching the app:
+
+```bash
+python install_febio.py
+```
+
+This installer attempts a repo-local FEBio install under `.third_party/febio/` by first checking the latest official `febiosoftware/FEBio` GitHub release assets and then falling back to an automatic source build. If the managed FEBio install is unavailable, the app still runs with its documented surrogate solver.
 
 ## How To Run
 
@@ -202,7 +206,7 @@ Single-command bootstrap from the repo root:
 python bootstrap.py
 ```
 
-If your default `python` is Python 3.11 or newer, this command now creates `.venv` if needed, installs `requirements.txt`, and launches the desktop app. You can also target other entrypoints:
+If your default `python` is Python 3.11 or newer, this command now creates `.venv` if needed, installs `requirements.txt`, attempts a managed FEBio install into `.third_party/febio/`, and launches the desktop app. You can also target other entrypoints:
 
 ```bash
 python bootstrap.py --entrypoint cli -- --dummy-data --output-dir outputs/demo_run
@@ -215,6 +219,12 @@ If your machine has multiple Python versions installed, use a 3.11+ interpreter 
 python3.11 bootstrap.py
 ```
 
+To force a fresh FEBio install attempt during bootstrap:
+
+```bash
+python bootstrap.py --force-febio-reinstall
+```
+
 Desktop launcher:
 
 - macOS: double-click [launch_osteovigil.command](/Users/anthonyditano/Documents/GitHub/OsteoVigil/launch_osteovigil.command)
@@ -224,7 +234,8 @@ On first launch, the desktop launcher now delegates to [bootstrap.py](/Users/ant
 
 1. creates `.venv` if missing
 2. installs `requirements.txt` into that environment
-3. starts the PyQt desktop application
+3. attempts an automatic FEBio install into `.third_party/febio/`
+4. starts the PyQt desktop application
 
 ## Outputs
 

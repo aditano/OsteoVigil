@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 
 from .models import BraceModel, FEBioSetup, MaterialResult, MeshResult, SegmentationResult, SimulationResult, StudyData
+from .utils.febio_manager import resolve_managed_febio_executable
 
 
 class FEBioRunner:
@@ -22,6 +23,9 @@ class FEBioRunner:
         executable = configured or env_value
         if executable and Path(executable).exists():
             return executable
+        managed = resolve_managed_febio_executable()
+        if managed and managed.exists():
+            return str(managed)
         for candidate in ("febio4", "febio4.exe", "febio3", "febio3.exe"):
             resolved = shutil.which(candidate)
             if resolved:
@@ -186,4 +190,3 @@ class FEBioRunner:
                 )
 
         return self._run_surrogate(study, segmentation, material_result, brace, output_dir)
-

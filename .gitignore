@@ -6,9 +6,9 @@ __pycache__/
 .DS_Store
 .venv/
 venv/
+.third_party/
 outputs/
 dist/
 build/
 *.egg-info/
 /tmp/
-
