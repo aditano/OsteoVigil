@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "osteovigil"
+version = "0.1.0"
+description = "Open-source CPT fracture prediction pipeline for lower-leg CT, mesh generation, FEBio export, and fracture-risk reporting."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "Open-source contributors" }
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest==8.2.2"]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+

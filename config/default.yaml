@@ -1,0 +1,98 @@
+project:
+  name: OsteoVigil
+  output_root: outputs
+  random_seed: 42
+
+patient:
+  age_years: 21
+  sex: unknown
+  body_mass_kg: 55.0
+  height_m: 1.65
+  steps_per_day: 6000
+  diagnosis: Congenital pseudarthrosis of the tibia
+  activity_level: community_ambulation
+
+input:
+  dicom_dir: null
+  brace_stl: null
+  allow_dummy_if_missing: true
+
+preprocessing:
+  clip_range_hu: [-1000, 2500]
+  target_spacing_mm: [1.0, 1.0, 1.0]
+  median_filter_size: 3
+
+segmentation:
+  strategy: auto
+  monai_model_path: null
+  bone_threshold_hu: 180
+  remove_small_objects_voxels: 2500
+  bridge_gap_slices: 4
+  morphology_radius_voxels: 2
+
+meshing:
+  surface_smoothing_iterations: 30
+  surface_decimation: 0.0
+  delaunay_alpha: 2.0
+  use_tetgen_if_available: true
+  tetgen_mindihedral: 18.0
+  tetgen_minratio: 1.4
+
+materials:
+  poisson_ratio: 0.30
+  density_equation: rho_ash = max(0.05, 0.000887 * HU + 0.0633)
+  modulus_equation: E_MPa = clip(6850 * rho_app^1.49, 100, 25000)
+  strength_equation: sigma_y_MPa = clip(114.8 * rho_app^1.72, 2, 220)
+  density_scale_from_ash_to_apparent: 1.04
+  material_bins: 6
+
+brace:
+  enabled: true
+  create_proxy_if_missing: true
+  radial_clearance_mm: 8.0
+  support_length_fraction: 0.75
+  stress_reduction_factor: 0.72
+
+loads:
+  gait_phases:
+    - name: heel_strike
+      axial_bodyweight_multiplier: 1.3
+      bending_moment_nm: 7.5
+      torsion_nm: 1.5
+    - name: mid_stance
+      axial_bodyweight_multiplier: 2.2
+      bending_moment_nm: 10.0
+      torsion_nm: 2.0
+    - name: toe_off
+      axial_bodyweight_multiplier: 1.8
+      bending_moment_nm: 8.0
+      torsion_nm: 2.5
+  distal_fixation_fraction: 0.08
+  proximal_load_fraction: 0.08
+
+simulation:
+  prefer_febio: true
+  febio_exe: null
+  surrogate_if_febio_unavailable: true
+  time_steps: 10
+  step_size: 0.1
+  fatigue_constant: 500000.0
+  fatigue_exponent: 7.5
+
+reporting:
+  include_disclaimer: true
+  include_visualizations: true
+  save_interactive_html: true
+  save_screenshots: true
+
+sample_data:
+  enabled_if_missing: true
+  volume_shape_zyx: [160, 128, 128]
+  spacing_mm_zyx: [1.2, 0.8, 0.8]
+  create_brace_proxy: true
+
+orchestration:
+  human_in_the_loop: false
+  verbose_agents: true
+  use_crewai_if_available: false
+
