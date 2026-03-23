@@ -629,8 +629,11 @@ class MainWindow(QMainWindow):
         # Checkboxes
         check_row = QHBoxLayout()
         check_row.setSpacing(28)
-        self.agent_check = QCheckBox("Use multi-agent orchestrator")
+        self.agent_check = QCheckBox("Enable in-depth logs")
         self.agent_check.setChecked(True)
+        self.agent_check.setToolTip(
+            "Shows more detailed stage-by-stage progress labels and writes the workflow manifest to the output folder."
+        )
         check_row.addWidget(self.agent_check)
         check_row.addStretch()
         layout.addLayout(check_row)

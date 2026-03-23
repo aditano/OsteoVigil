@@ -150,6 +150,8 @@ This file is the living handoff/status document for the `OsteoVigil` project. It
   - `launch_osteovigil.bat`
 - Updated the PyQt desktop app so bundled demo mode can be toggled on, a demo case can be selected, and the manual DICOM/brace inputs are disabled while demo mode is active:
   - `desktop_app.py`
+- Renamed the desktop app's user-facing agent checkbox to `Enable in-depth logs` so the UI reflects the current behavior more clearly:
+  - `desktop_app.py`
 - Added a repo-local FEBio manager that can auto-download or build FEBio under `.third_party/febio/` and expose it to bootstrap and runtime resolution:
   - `src/cpt_predictor/utils/febio_manager.py`
   - `install_febio.py`
