@@ -196,6 +196,17 @@ Streamlit UI:
 streamlit run streamlit_app.py
 ```
 
+Desktop launcher:
+
+- macOS: double-click [launch_osteovigil.command](/Users/anthonyditano/Documents/GitHub/OsteoVigil/launch_osteovigil.command)
+- Windows: double-click [launch_osteovigil.bat](/Users/anthonyditano/Documents/GitHub/OsteoVigil/launch_osteovigil.bat)
+
+On first launch, the desktop launcher now:
+
+1. creates `.venv` if missing
+2. installs `requirements.txt` into that environment
+3. starts the PyQt desktop application
+
 ## Outputs
 
 - `summary.json`
