@@ -196,12 +196,31 @@ Streamlit UI:
 streamlit run streamlit_app.py
 ```
 
+Single-command bootstrap from the repo root:
+
+```bash
+python bootstrap.py
+```
+
+If your default `python` is Python 3.11 or newer, this command now creates `.venv` if needed, installs `requirements.txt`, and launches the desktop app. You can also target other entrypoints:
+
+```bash
+python bootstrap.py --entrypoint cli -- --dummy-data --output-dir outputs/demo_run
+python bootstrap.py --entrypoint streamlit
+```
+
+If your machine has multiple Python versions installed, use a 3.11+ interpreter explicitly:
+
+```bash
+python3.11 bootstrap.py
+```
+
 Desktop launcher:
 
 - macOS: double-click [launch_osteovigil.command](/Users/anthonyditano/Documents/GitHub/OsteoVigil/launch_osteovigil.command)
 - Windows: double-click [launch_osteovigil.bat](/Users/anthonyditano/Documents/GitHub/OsteoVigil/launch_osteovigil.bat)
 
-On first launch, the desktop launcher now:
+On first launch, the desktop launcher now delegates to [bootstrap.py](/Users/anthonyditano/Documents/GitHub/OsteoVigil/bootstrap.py), which:
 
 1. creates `.venv` if missing
 2. installs `requirements.txt` into that environment

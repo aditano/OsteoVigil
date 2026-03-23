@@ -28,45 +28,6 @@ if not defined BOOTSTRAP_PYTHON (
     exit /b 1
 )
 
-if not exist ".venv\Scripts\python.exe" (
-    echo Creating local virtual environment with %BOOTSTRAP_PYTHON%...
-    %BOOTSTRAP_PYTHON% -m venv .venv
-    if errorlevel 1 (
-        echo Failed to create .venv
-        pause
-        exit /b 1
-    )
-)
-
-call .venv\Scripts\activate.bat
-set "PYTHON=.venv\Scripts\python.exe"
-set "REQ_STAMP=.venv\.osteovigil_requirements_installed"
-set "NEEDS_INSTALL=0"
-
-if not exist "%REQ_STAMP%" (
-    set "NEEDS_INSTALL=1"
-) else (
-    powershell -NoProfile -Command "if ((Get-Item 'requirements.txt').LastWriteTimeUtc -gt (Get-Item '.venv\.osteovigil_requirements_installed').LastWriteTimeUtc) { exit 10 }"
-    if !errorlevel! equ 10 set "NEEDS_INSTALL=1"
-)
-
-if "%NEEDS_INSTALL%"=="1" (
-    echo Installing OsteoVigil dependencies...
-    %PYTHON% -m pip install --upgrade pip
-    if errorlevel 1 (
-        echo Failed to upgrade pip.
-        pause
-        exit /b 1
-    )
-    %PYTHON% -m pip install -r requirements.txt
-    if errorlevel 1 (
-        echo Failed to install requirements.
-        pause
-        exit /b 1
-    )
-    type nul > "%REQ_STAMP%"
-)
-
 echo Starting OsteoVigil...
-%PYTHON% desktop_app.py
+%BOOTSTRAP_PYTHON% bootstrap.py --entrypoint desktop
 pause

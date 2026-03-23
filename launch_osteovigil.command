@@ -24,20 +24,5 @@ if [ -z "${BOOTSTRAP_PYTHON}" ]; then
     exit 1
 fi
 
-if [ ! -x ".venv/bin/python" ]; then
-    echo "Creating local virtual environment with ${BOOTSTRAP_PYTHON}..."
-    "${BOOTSTRAP_PYTHON}" -m venv .venv
-fi
-
-source ".venv/bin/activate"
-
-REQ_STAMP=".venv/.osteovigil_requirements_installed"
-if [ ! -f "${REQ_STAMP}" ] || [ "requirements.txt" -nt "${REQ_STAMP}" ]; then
-    echo "Installing OsteoVigil dependencies..."
-    python -m pip install --upgrade pip
-    python -m pip install -r requirements.txt
-    touch "${REQ_STAMP}"
-fi
-
 echo "Starting OsteoVigil..."
-python desktop_app.py
+"${BOOTSTRAP_PYTHON}" bootstrap.py --entrypoint desktop

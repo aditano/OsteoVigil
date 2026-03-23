@@ -144,6 +144,7 @@ This file is the living handoff/status document for the `OsteoVigil` project. It
 - Added Streamlit app:
   - `streamlit_app.py`
 - Added desktop launchers that bootstrap `.venv` and install `requirements.txt` automatically on first run:
+  - `bootstrap.py`
   - `launch_osteovigil.command`
   - `launch_osteovigil.bat`
 
@@ -171,6 +172,8 @@ PYTHONPYCACHEPREFIX=/tmp/osteovigil_pycache python3 -m compileall src tests main
 - The repo was successfully pushed to GitHub.
 - Both included demo DICOM folders load successfully through `src/cpt_predictor/io/dicom_loader.py`.
 - The desktop launcher bootstrap logic is in place, but it has not yet been exercised end-to-end in this sandbox with the full dependency install.
+- The repo now has a single-command bootstrap path: `python bootstrap.py`
+- `bootstrap.py` now fails fast with a clear error if the caller uses Python older than 3.11.
 
 ### Not yet verified
 
