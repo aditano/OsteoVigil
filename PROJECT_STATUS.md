@@ -68,6 +68,9 @@ This file is the living handoff/status document for the `OsteoVigil` project. It
   - `pydicom` fallback
 - Added synthetic CPT demo data generation.
 - Added synthetic DICOM writing for demo/smoke workflows.
+- Added two included demo cases under `data/demo/`:
+  - a real public normal distal tibia/fibula/ankle DICOM series
+  - a synthetic abnormal CPT-style DICOM series
 - Files:
   - `src/cpt_predictor/io/dicom_loader.py`
   - `src/cpt_predictor/io/sample_data.py`
@@ -163,6 +166,7 @@ PYTHONPYCACHEPREFIX=/tmp/osteovigil_pycache python3 -m compileall src tests main
 ```
 
 - The repo was successfully pushed to GitHub.
+- Both included demo DICOM folders load successfully through `src/cpt_predictor/io/dicom_loader.py`.
 
 ### Not yet verified
 
@@ -250,6 +254,12 @@ The codebase is scaffolded and integrated, and the project is ready for real loc
 - `src/cpt_predictor/cli.py`
 - `src/cpt_predictor/pipeline.py`
 
+### Demo data
+
+- `data/demo/README.md`
+- `data/demo/normal_real_talocrural/`
+- `data/demo/abnormal_synthetic_cpt/`
+
 ### Core modules
 
 - `src/cpt_predictor/models.py`
@@ -336,4 +346,3 @@ This file should be updated after every meaningful milestone:
 - real-data test results
 - major bug fixes
 - roadmap changes
-

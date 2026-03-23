@@ -208,6 +208,13 @@ streamlit run streamlit_app.py
 - `cpt_fracture_report.pdf`
 - `model.feb`
 
+## Demo Cases
+
+Two demo cases are included under [data/demo/README.md](/Users/anthonyditano/Documents/GitHub/OsteoVigil/data/demo/README.md):
+
+- `normal_real_talocrural`: a real public distal tibia/fibula/ankle DICOM series
+- `abnormal_synthetic_cpt`: a synthetic CPT-style abnormal DICOM series with a proxy brace STL
+
 ## Next Steps / Improvements
 
 1. Replace the classical segmentation fallback with a CPT-tuned nnU-Net or MONAI bundle.
@@ -216,4 +223,3 @@ streamlit run streamlit_app.py
 4. Add calibration against cadaveric or phantom data for HU-to-property mapping.
 5. Introduce asynchronous job queues and cloud deployment.
 6. Add DICOM RTStruct and PACS export hooks.
-

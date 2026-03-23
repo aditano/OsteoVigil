@@ -1,0 +1,86 @@
+solid brace_proxy
+facet normal 0.000000 0.000000 1.000000
+  outer loop
+    vertex -20.736000 -25.344000 -83.160000
+    vertex 20.736000 -25.344000 -83.160000
+    vertex 20.736000 25.344000 -83.160000
+  endloop
+endfacet
+facet normal 0.000000 0.000000 1.000000
+  outer loop
+    vertex -20.736000 -25.344000 -83.160000
+    vertex 20.736000 25.344000 -83.160000
+    vertex -20.736000 25.344000 -83.160000
+  endloop
+endfacet
+facet normal 0.000000 0.000000 1.000000
+  outer loop
+    vertex -20.736000 -25.344000 83.160000
+    vertex 20.736000 -25.344000 83.160000
+    vertex 20.736000 25.344000 83.160000
+  endloop
+endfacet
+facet normal 0.000000 0.000000 1.000000
+  outer loop
+    vertex -20.736000 -25.344000 83.160000
+    vertex 20.736000 25.344000 83.160000
+    vertex -20.736000 25.344000 83.160000
+  endloop
+endfacet
+facet normal 0.000000 -1.000000 0.000000
+  outer loop
+    vertex -20.736000 -25.344000 -83.160000
+    vertex 20.736000 -25.344000 -83.160000
+    vertex 20.736000 -25.344000 83.160000
+  endloop
+endfacet
+facet normal 0.000000 -1.000000 0.000000
+  outer loop
+    vertex -20.736000 -25.344000 -83.160000
+    vertex 20.736000 -25.344000 83.160000
+    vertex -20.736000 -25.344000 83.160000
+  endloop
+endfacet
+facet normal 1.000000 0.000000 0.000000
+  outer loop
+    vertex 20.736000 -25.344000 -83.160000
+    vertex 20.736000 25.344000 -83.160000
+    vertex 20.736000 25.344000 83.160000
+  endloop
+endfacet
+facet normal 1.000000 0.000000 0.000000
+  outer loop
+    vertex 20.736000 -25.344000 -83.160000
+    vertex 20.736000 25.344000 83.160000
+    vertex 20.736000 -25.344000 83.160000
+  endloop
+endfacet
+facet normal 0.000000 1.000000 0.000000
+  outer loop
+    vertex 20.736000 25.344000 -83.160000
+    vertex -20.736000 25.344000 -83.160000
+    vertex -20.736000 25.344000 83.160000
+  endloop
+endfacet
+facet normal 0.000000 1.000000 -0.000000
+  outer loop
+    vertex 20.736000 25.344000 -83.160000
+    vertex -20.736000 25.344000 83.160000
+    vertex 20.736000 25.344000 83.160000
+  endloop
+endfacet
+facet normal -1.000000 0.000000 0.000000
+  outer loop
+    vertex -20.736000 25.344000 -83.160000
+    vertex -20.736000 -25.344000 -83.160000
+    vertex -20.736000 -25.344000 83.160000
+  endloop
+endfacet
+facet normal -1.000000 0.000000 0.000000
+  outer loop
+    vertex -20.736000 25.344000 -83.160000
+    vertex -20.736000 -25.344000 83.160000
+    vertex -20.736000 25.344000 83.160000
+  endloop
+endfacet
+endsolid brace_proxy
