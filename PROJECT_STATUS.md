@@ -12,6 +12,13 @@ This file is the living handoff/status document for the `OsteoVigil` project. It
 - what to run next
 - where the important code lives
 
+## Usage / Distribution Intent
+
+- `OsteoVigil` is being maintained as an educational, research, and proof-of-concept project.
+- The project is not being resold or commercialized by the author.
+- Third parties are not authorized by project intent to use, repackage, or market the project for commercial purposes.
+- This intent is now documented in the repository, but the current MIT license would need to be changed if a legally binding non-commercial restriction is desired.
+
 ## Project Summary
 
 `OsteoVigil` is an open-source Python application for congenital pseudarthrosis of the tibia (CPT) fracture-risk analysis from lower-leg CT data, with optional AFO brace support. The current codebase includes:

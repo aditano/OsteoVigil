@@ -2,6 +2,13 @@
 
 `OsteoVigil` is an open-source Python application for lower-leg CT loading, tibial segmentation, tetrahedral mesh generation, density-to-material mapping, FEBio model export, surrogate-or-FEBio simulation, fracture-risk analysis, and clinician-friendly reporting for congenital pseudarthrosis of the tibia (CPT) in a brace-assisted patient workflow.
 
+## Usage Notice
+
+- This repository is intended as an educational, research, and proof-of-concept project.
+- The project is not being offered for resale or commercialization by the author.
+- Third parties are not authorized by project intent to repackage, resell, or otherwise use this work for commercial purposes.
+- This notice documents the project's intended use. If you want a legally binding non-commercial restriction, the repository license should be updated accordingly.
+
 ## Architecture Diagram
 
 ```mermaid
@@ -130,6 +137,8 @@ All tooling is free/open-source.
 ## Ethical / Medical Disclaimers
 
 - For research and educational use only.
+- Proof-of-concept software only; not a commercial medical product.
+- The author does not authorize resale, repackaging, or commercial exploitation of this project.
 - Not for diagnosis, treatment planning, or unsupervised clinical decision-making.
 - Predictions depend heavily on CT quality, brace geometry, load assumptions, and segmentation quality.
 - Any use on real patients should include review by an orthopaedic surgeon, radiologist, and biomechanical engineer.
