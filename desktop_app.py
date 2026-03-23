@@ -39,6 +39,13 @@ DEMO_CASES = {
     },
 }
 
+GUI_ERROR_CODES = {
+    "missing_manual_dicom": "OVGUI-001",
+    "invalid_manual_dicom": "OVGUI-002",
+    "missing_demo_dicom": "OVGUI-003",
+    "missing_demo_brace": "OVGUI-004",
+}
+
 # ---------------------------------------------------------------------------
 # Color / theme constants
 # ---------------------------------------------------------------------------
@@ -476,6 +483,7 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(self.run_btn)
         btn_row.addStretch()
         root.addLayout(btn_row)
+        self._update_run_button_state()
 
         # ── Progress section (hidden initially) ──────────────────────────
         self.progress_frame = self._build_progress()
@@ -565,6 +573,7 @@ class MainWindow(QMainWindow):
         dicom_row = QHBoxLayout()
         self.dicom_edit = QLineEdit()
         self.dicom_edit.setPlaceholderText("Select DICOM folder…")
+        self.dicom_edit.textChanged.connect(self._update_run_button_state)
         self.dicom_browse = QPushButton("Browse…")
         self.dicom_browse.setFixedWidth(90)
         self.dicom_browse.clicked.connect(self._browse_dicom)
@@ -577,6 +586,7 @@ class MainWindow(QMainWindow):
         brace_row = QHBoxLayout()
         self.brace_edit = QLineEdit()
         self.brace_edit.setPlaceholderText("Optional brace geometry file…")
+        self.brace_edit.textChanged.connect(self._update_run_button_state)
         self.brace_browse = QPushButton("Browse…")
         self.brace_browse.setFixedWidth(90)
         self.brace_browse.clicked.connect(self._browse_brace)
@@ -680,6 +690,42 @@ class MainWindow(QMainWindow):
         key = self.demo_combo.currentData()
         return DEMO_CASES[key]
 
+    def _resolved_inputs(self) -> tuple[bool, str | None, str | None]:
+        use_demo = self.demo_check.isChecked()
+        if use_demo:
+            demo_case = self._selected_demo_case()
+            return True, demo_case["dicom_dir"], demo_case["brace_stl"]
+        return False, self.dicom_edit.text().strip() or None, self.brace_edit.text().strip() or None
+
+    def _current_input_state(self) -> tuple[bool, str | None, str]:
+        _use_demo, dicom_dir, brace_stl = self._resolved_inputs()
+
+        if use_demo:
+            if not dicom_dir or not os.path.isdir(dicom_dir):
+                code = GUI_ERROR_CODES["missing_demo_dicom"]
+                return False, code, f"The selected bundled demo DICOM folder was not found.\n\nError code: {code}"
+            if brace_stl and not os.path.isfile(brace_stl):
+                code = GUI_ERROR_CODES["missing_demo_brace"]
+                return False, code, f"The selected bundled demo brace STL was not found.\n\nError code: {code}"
+            return True, None, "Ready to run using the selected bundled demo case."
+
+        if not dicom_dir:
+            code = GUI_ERROR_CODES["missing_manual_dicom"]
+            return False, code, f"Select a DICOM folder or enable 'Use bundled demo case'.\n\nError code: {code}"
+        if not os.path.isdir(dicom_dir):
+            code = GUI_ERROR_CODES["invalid_manual_dicom"]
+            return False, code, f"The selected DICOM folder does not exist.\n\nError code: {code}"
+        return True, None, "Ready to run using the selected DICOM folder."
+
+    def _update_run_button_state(self, *_args):
+        if not hasattr(self, "run_btn"):
+            return
+
+        ready, code, message = self._current_input_state()
+        worker_running = bool(self._worker and self._worker.isRunning())
+        self.run_btn.setEnabled(ready and not worker_running)
+        self.run_btn.setToolTip(message if ready else f"{code}: {message}")
+
     def _sync_demo_inputs(self, *_args):
         use_demo = self.demo_check.isChecked()
 
@@ -713,6 +759,7 @@ class MainWindow(QMainWindow):
             widget.setEnabled(not use_demo)
 
         self._demo_mode_active = use_demo
+        self._update_run_button_state()
 
     # ── Progress ─────────────────────────────────────────────────────────
     def _build_progress(self) -> QFrame:
@@ -754,38 +801,15 @@ class MainWindow(QMainWindow):
         output_dir = self.out_edit.text().strip() or os.path.join(os.path.expanduser("~"), "OsteoVigil_Results")
         os.makedirs(output_dir, exist_ok=True)
 
-        use_demo = self.demo_check.isChecked()
-        if use_demo:
-            demo_case = self._selected_demo_case()
-            dicom_dir = demo_case["dicom_dir"]
-            brace_stl = demo_case["brace_stl"]
-            if not os.path.isdir(dicom_dir):
-                QMessageBox.warning(
-                    self,
-                    "Demo Data Missing",
-                    f"The selected demo DICOM folder was not found:\n\n{dicom_dir}",
-                )
-                return
-            if brace_stl and not os.path.isfile(brace_stl):
-                QMessageBox.warning(
-                    self,
-                    "Demo Brace Missing",
-                    f"The selected demo brace STL was not found:\n\n{brace_stl}",
-                )
-                return
-        else:
-            dicom_dir = self.dicom_edit.text().strip() or None
-            brace_stl = self.brace_edit.text().strip() or None
+        ready, error_code, error_message = self._current_input_state()
+        if not ready:
+            QMessageBox.warning(self, f"Cannot Start ({error_code})", error_message)
+            self._update_run_button_state()
+            return
+
+        use_demo, dicom_dir, brace_stl = self._resolved_inputs()
 
         use_agents = self.agent_check.isChecked()
-
-        if not use_demo and not dicom_dir:
-            QMessageBox.warning(
-                self,
-                "No DICOM Folder",
-                "Please select a DICOM folder or enable 'Use bundled demo case'.",
-            )
-            return
 
         self.run_btn.setEnabled(False)
         self.results_frame.setVisible(False)
@@ -817,13 +841,13 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(100)
         self.stage_label.setText("Complete!")
         self._worker = None
-        self.run_btn.setEnabled(True)
+        self._update_run_button_state()
         self._populate_results(artifacts)
         self.results_frame.setVisible(True)
 
     def _on_error(self, tb: str):
         self._worker = None
-        self.run_btn.setEnabled(True)
+        self._update_run_button_state()
         self.progress_frame.setVisible(False)
         QMessageBox.critical(
             self,

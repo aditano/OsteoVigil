@@ -159,6 +159,8 @@ This file is the living handoff/status document for the `OsteoVigil` project. It
   - `desktop_app.py`
 - Renamed the desktop app's user-facing agent checkbox to `Enable in-depth logs` so the UI reflects the current behavior more clearly:
   - `desktop_app.py`
+- Added desktop input-state validation so the `Run Analysis` button is disabled until a valid DICOM source is selected, and missing-input start attempts now surface explicit GUI error codes:
+  - `desktop_app.py`
 - Added a repo-local FEBio manager that can auto-download or build FEBio under `.third_party/febio/` and expose it to bootstrap and runtime resolution:
   - `src/cpt_predictor/utils/febio_manager.py`
   - `install_febio.py`
