@@ -25,6 +25,43 @@ VENV_PYTHON = VENV_DIR / ("Scripts/python.exe" if os.name == "nt" else "bin/pyth
 REQ_STAMP = VENV_DIR / ".osteovigil_requirements_installed"
 
 
+def default_entrypoint() -> str:
+    if sys.platform == "darwin":
+        return "streamlit"
+    return "desktop"
+
+
+def configure_qt_environment(env: dict[str, str]) -> None:
+    pyqt_root = None
+
+    if os.name == "nt":
+        candidate = VENV_DIR / "Lib" / "site-packages" / "PyQt6" / "Qt6"
+        if candidate.exists():
+            pyqt_root = candidate
+    else:
+        lib_dir = VENV_DIR / "lib"
+        for candidate in sorted(lib_dir.glob("python*/site-packages/PyQt6/Qt6")):
+            if candidate.exists():
+                pyqt_root = candidate
+                break
+
+    if not pyqt_root:
+        return
+
+    plugins_dir = pyqt_root / "plugins"
+    platforms_dir = plugins_dir / "platforms"
+    if plugins_dir.exists():
+        env.setdefault("QT_PLUGIN_PATH", str(plugins_dir))
+    if platforms_dir.exists():
+        env.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", str(platforms_dir))
+    if sys.platform == "darwin":
+        env.setdefault("QT_QPA_PLATFORM", "cocoa")
+
+
+def configure_streamlit_environment(env: dict[str, str]) -> None:
+    env.setdefault("STREAMLIT_BROWSER_GATHER_USAGE_STATS", "false")
+
+
 def run_command(cmd: list[str]) -> None:
     print(f"[bootstrap] Running: {' '.join(cmd)}")
     subprocess.check_call(cmd, cwd=REPO_ROOT)
@@ -105,14 +142,30 @@ def launch_command(entrypoint: str, entry_args: list[str]) -> list[str]:
     raise ValueError(f"Unsupported entrypoint: {entrypoint}")
 
 
+def run_entrypoint(entrypoint: str, entry_args: list[str], launch_env: dict[str, str]) -> int:
+    command = launch_command(entrypoint, entry_args)
+    completed = subprocess.run(command, cwd=REPO_ROOT, env=launch_env, check=False)
+    if completed.returncode == 0:
+        return 0
+
+    if entrypoint == "desktop" and sys.platform == "darwin":
+        print("[bootstrap] Desktop Qt launch failed on macOS.")
+        print("[bootstrap] Falling back to the Streamlit interface instead.")
+        fallback = launch_command("streamlit", [])
+        return subprocess.call(fallback, cwd=REPO_ROOT, env=launch_env)
+
+    raise subprocess.CalledProcessError(completed.returncode, command)
+
+
 def parse_args() -> tuple[str, bool, list[str]]:
+    entrypoint_default = default_entrypoint()
     parser = argparse.ArgumentParser(
         description="Create .venv, install dependencies, and launch OsteoVigil."
     )
     parser.add_argument(
         "--entrypoint",
         choices=("desktop", "cli", "streamlit"),
-        default="desktop",
+        default=entrypoint_default,
         help="Application entrypoint to launch after bootstrap completes.",
     )
     parser.add_argument(
@@ -139,7 +192,7 @@ def main() -> int:
     ensure_virtualenv()
     ensure_dependencies()
 
-    if Path(sys.executable).resolve() != VENV_PYTHON.resolve():
+    if Path(sys.prefix).resolve() != VENV_DIR.resolve():
         relaunch = [str(VENV_PYTHON), str(REPO_ROOT / "bootstrap.py"), "--entrypoint", entrypoint]
         if force_febio_reinstall:
             relaunch.append("--force-febio-reinstall")
@@ -151,9 +204,10 @@ def main() -> int:
     launch_env = os.environ.copy()
     if febio_exe:
         launch_env["FEBIO_EXE"] = str(febio_exe)
+    configure_qt_environment(launch_env)
+    configure_streamlit_environment(launch_env)
 
-    subprocess.check_call(launch_command(entrypoint, entry_args), cwd=REPO_ROOT, env=launch_env)
-    return 0
+    return run_entrypoint(entrypoint, entry_args, launch_env)
 
 
 if __name__ == "__main__":

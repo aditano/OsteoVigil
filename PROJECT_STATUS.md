@@ -155,6 +155,9 @@ This file is the living handoff/status document for the `OsteoVigil` project. It
   - `install_febio.py`
   - `launch_osteovigil.command`
   - `launch_osteovigil.bat`
+- Switched the macOS launcher and default `bootstrap.py` entrypoint to Streamlit so one-command startup avoids the current PyQt/Qt crash path on affected Macs:
+  - `bootstrap.py`
+  - `launch_osteovigil.command`
 - Updated the PyQt desktop app so bundled demo mode can be toggled on, a demo case can be selected, and the manual DICOM/brace inputs are disabled while demo mode is active:
   - `desktop_app.py`
 - Renamed the desktop app's user-facing agent checkbox to `Enable in-depth logs` so the UI reflects the current behavior more clearly:
@@ -165,6 +168,13 @@ This file is the living handoff/status document for the `OsteoVigil` project. It
   - `src/cpt_predictor/utils/febio_manager.py`
   - `install_febio.py`
   - `tests/test_febio_manager.py`
+- Updated bootstrap on macOS so a desktop Qt startup failure falls back to the Streamlit interface instead of terminating immediately:
+  - `bootstrap.py`
+- Disabled Streamlit's first-run usage-statistics email prompt with repo-local config and bootstrap environment defaults so the macOS one-click path is less interactive:
+  - `.streamlit/config.toml`
+  - `bootstrap.py`
+- Improved managed FEBio source-build setup on macOS by wiring CMake directly to the repo-local `ninja` binary and explicitly resolving `clang`/`clang++` via `xcrun` when available:
+  - `src/cpt_predictor/utils/febio_manager.py`
 
 ### Tests
 

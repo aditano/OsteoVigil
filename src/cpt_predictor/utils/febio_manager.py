@@ -188,7 +188,7 @@ def _select_release_asset(release: dict[str, Any]) -> Optional[dict[str, Any]]:
 
 
 def _venv_bin_dir(python_executable: Path) -> Path:
-    return python_executable.resolve().parent
+    return python_executable.parent
 
 
 def _find_tool(tool_name: str, python_executable: Path) -> Optional[str]:
@@ -202,6 +202,23 @@ def _find_tool(tool_name: str, python_executable: Path) -> Optional[str]:
 def _run_command(command: list[str], cwd: Path, verbose: bool) -> None:
     _log(f"Running: {' '.join(command)}", verbose)
     subprocess.check_call(command, cwd=cwd)
+
+
+def _resolve_macos_compiler(tool: str) -> Optional[str]:
+    try:
+        completed = subprocess.run(
+            ["xcrun", "--find", tool],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+
+    if completed.returncode != 0:
+        return None
+    compiler_path = completed.stdout.strip()
+    return compiler_path or None
 
 
 def _ensure_build_tools(python_executable: Path, verbose: bool) -> tuple[str, Optional[str]]:
@@ -311,8 +328,18 @@ def _install_from_source(
         "-DCMAKE_BUILD_TYPE=Release",
         "-DUSE_MKL=OFF",
     ]
+    if platform.system().lower() == "darwin":
+        c_compiler = _resolve_macos_compiler("clang")
+        cxx_compiler = _resolve_macos_compiler("clang++")
+        if c_compiler and cxx_compiler:
+            configure_cmd.extend(
+                [
+                    f"-DCMAKE_C_COMPILER={c_compiler}",
+                    f"-DCMAKE_CXX_COMPILER={cxx_compiler}",
+                ]
+            )
     if ninja_path:
-        configure_cmd.extend(["-G", "Ninja"])
+        configure_cmd.extend(["-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={ninja_path}"])
 
     _run_command(configure_cmd, cwd=_repo_root(repo_root), verbose=verbose)
     _run_command(

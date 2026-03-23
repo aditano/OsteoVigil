@@ -25,4 +25,5 @@ if [ -z "${BOOTSTRAP_PYTHON}" ]; then
 fi
 
 echo "Starting OsteoVigil..."
-"${BOOTSTRAP_PYTHON}" bootstrap.py --entrypoint desktop
+echo "Launching the Streamlit interface on macOS for the most reliable startup path..."
+"${BOOTSTRAP_PYTHON}" bootstrap.py --entrypoint streamlit

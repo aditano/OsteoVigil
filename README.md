@@ -215,7 +215,7 @@ Single-command bootstrap from the repo root:
 python bootstrap.py
 ```
 
-If your default `python` is Python 3.11 or newer, this command now creates `.venv` if needed, installs `requirements.txt`, attempts a managed FEBio install into `.third_party/febio/`, and launches the desktop app. You can also target other entrypoints:
+If your default `python` is Python 3.11 or newer, this command now creates `.venv` if needed, installs `requirements.txt`, attempts a managed FEBio install into `.third_party/febio/`, and launches the default UI for your platform. On macOS, the default UI is Streamlit for reliability. You can also target other entrypoints:
 
 ```bash
 python bootstrap.py --entrypoint cli -- --dummy-data --output-dir outputs/demo_run
@@ -239,12 +239,17 @@ Desktop launcher:
 - macOS: double-click [launch_osteovigil.command](/Users/anthonyditano/Documents/GitHub/OsteoVigil/launch_osteovigil.command)
 - Windows: double-click [launch_osteovigil.bat](/Users/anthonyditano/Documents/GitHub/OsteoVigil/launch_osteovigil.bat)
 
-On first launch, the desktop launcher now delegates to [bootstrap.py](/Users/anthonyditano/Documents/GitHub/OsteoVigil/bootstrap.py), which:
+On first launch, the launcher now delegates to [bootstrap.py](/Users/anthonyditano/Documents/GitHub/OsteoVigil/bootstrap.py), which:
 
 1. creates `.venv` if missing
 2. installs `requirements.txt` into that environment
 3. attempts an automatic FEBio install into `.third_party/febio/`
-4. starts the PyQt desktop application
+4. starts the platform-default UI
+
+macOS note:
+
+- the `.command` launcher now opens the Streamlit interface by default to avoid a PyQt/Qt startup issue affecting some macOS environments
+- the PyQt desktop app remains available for manual testing with `python bootstrap.py --entrypoint desktop`
 
 ## Outputs
 
