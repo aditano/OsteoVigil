@@ -17,12 +17,27 @@ if _SRC_DIR not in sys.path:
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QLineEdit, QDoubleSpinBox, QSpinBox,
+    QLabel, QPushButton, QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox,
     QCheckBox, QGroupBox, QProgressBar, QTextEdit, QScrollArea,
     QFileDialog, QMessageBox, QFrame, QSizePolicy, QSpacerItem,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
 from PyQt6.QtGui import QFont, QPixmap, QColor, QPalette
+
+DEMO_CASES = {
+    "normal_real_talocrural": {
+        "label": "Normal distal tibia/fibula CT (real public demo)",
+        "description": "Uses the bundled real distal tibia/fibula/ankle DICOM series. No brace STL is included.",
+        "dicom_dir": os.path.join(_REPO_ROOT, "data", "demo", "normal_real_talocrural"),
+        "brace_stl": None,
+    },
+    "abnormal_synthetic_cpt": {
+        "label": "Abnormal CPT-like CT (synthetic demo)",
+        "description": "Uses the bundled abnormal CPT-style demo DICOM series and its included AFO proxy STL.",
+        "dicom_dir": os.path.join(_REPO_ROOT, "data", "demo", "abnormal_synthetic_cpt", "dicom"),
+        "brace_stl": os.path.join(_REPO_ROOT, "data", "demo", "abnormal_synthetic_cpt", "afo_proxy.stl"),
+    },
+}
 
 # ---------------------------------------------------------------------------
 # Color / theme constants
@@ -110,6 +125,32 @@ QLineEdit:focus {{
 }}
 QLineEdit::placeholder {{
     color: {TEXT_MUTED};
+}}
+QLineEdit:disabled {{
+    color: {TEXT_MUTED};
+}}
+
+/* ── Combo boxes ─────────────────────────────────────────── */
+QComboBox {{
+    background-color: {BG_INPUT};
+    border: 1px solid {BORDER};
+    border-radius: 6px;
+    padding: 6px 10px;
+    color: {TEXT_MAIN};
+    font-size: 13px;
+}}
+QComboBox:focus {{
+    border-color: {ACCENT};
+}}
+QComboBox:disabled {{
+    color: {TEXT_MUTED};
+}}
+QComboBox QAbstractItemView {{
+    background-color: {BG_CARD};
+    border: 1px solid {BORDER};
+    color: {TEXT_MAIN};
+    selection-background-color: {ACCENT};
+    selection-color: #0d1117;
 }}
 
 /* ── Spin boxes ──────────────────────────────────────────── */
@@ -400,6 +441,9 @@ class MainWindow(QMainWindow):
 
         self._worker: PipelineWorker | None = None
         self._artifacts: dict = {}
+        self._manual_dicom_text = ""
+        self._manual_brace_text = ""
+        self._demo_mode_active = False
 
         # ── Outer scroll area so the whole window is scrollable ──────────
         outer_scroll = QScrollArea()
@@ -496,16 +540,36 @@ class MainWindow(QMainWindow):
         layout.setSpacing(14)
         layout.setContentsMargins(16, 20, 16, 16)
 
+        # Input source
+        layout.addWidget(self._field_label("Input Source", "Use your own scan or one of the bundled demo cases"))
+        source_row = QHBoxLayout()
+        source_row.setSpacing(12)
+        self.demo_check = QCheckBox("Use bundled demo case")
+        self.demo_check.setChecked(True)
+        self.demo_check.toggled.connect(self._sync_demo_inputs)
+        self.demo_combo = QComboBox()
+        for key, case in DEMO_CASES.items():
+            self.demo_combo.addItem(case["label"], key)
+        self.demo_combo.currentIndexChanged.connect(self._sync_demo_inputs)
+        source_row.addWidget(self.demo_check)
+        source_row.addWidget(self.demo_combo, 1)
+        layout.addLayout(source_row)
+
+        self.demo_info = QLabel()
+        self.demo_info.setObjectName("muted")
+        self.demo_info.setWordWrap(True)
+        layout.addWidget(self.demo_info)
+
         # DICOM folder
         layout.addWidget(self._field_label("DICOM Folder", "CT scan DICOM series directory"))
         dicom_row = QHBoxLayout()
         self.dicom_edit = QLineEdit()
         self.dicom_edit.setPlaceholderText("Select DICOM folder…")
-        dicom_browse = QPushButton("Browse…")
-        dicom_browse.setFixedWidth(90)
-        dicom_browse.clicked.connect(self._browse_dicom)
+        self.dicom_browse = QPushButton("Browse…")
+        self.dicom_browse.setFixedWidth(90)
+        self.dicom_browse.clicked.connect(self._browse_dicom)
         dicom_row.addWidget(self.dicom_edit)
-        dicom_row.addWidget(dicom_browse)
+        dicom_row.addWidget(self.dicom_browse)
         layout.addLayout(dicom_row)
 
         # Brace STL (optional)
@@ -513,11 +577,11 @@ class MainWindow(QMainWindow):
         brace_row = QHBoxLayout()
         self.brace_edit = QLineEdit()
         self.brace_edit.setPlaceholderText("Optional brace geometry file…")
-        brace_browse = QPushButton("Browse…")
-        brace_browse.setFixedWidth(90)
-        brace_browse.clicked.connect(self._browse_brace)
+        self.brace_browse = QPushButton("Browse…")
+        self.brace_browse.setFixedWidth(90)
+        self.brace_browse.clicked.connect(self._browse_brace)
         brace_row.addWidget(self.brace_edit)
-        brace_row.addWidget(brace_browse)
+        brace_row.addWidget(self.brace_browse)
         layout.addLayout(brace_row)
 
         # Output directory
@@ -565,15 +629,13 @@ class MainWindow(QMainWindow):
         # Checkboxes
         check_row = QHBoxLayout()
         check_row.setSpacing(28)
-        self.demo_check = QCheckBox("Use synthetic demo data")
-        self.demo_check.setChecked(True)
         self.agent_check = QCheckBox("Use multi-agent orchestrator")
         self.agent_check.setChecked(True)
-        check_row.addWidget(self.demo_check)
         check_row.addWidget(self.agent_check)
         check_row.addStretch()
         layout.addLayout(check_row)
 
+        self._sync_demo_inputs()
         return box
 
     def _field_label(self, title: str, hint: str = "") -> QWidget:
@@ -610,6 +672,44 @@ class MainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "Select Output Directory")
         if path:
             self.out_edit.setText(path)
+
+    def _selected_demo_case(self) -> dict:
+        key = self.demo_combo.currentData()
+        return DEMO_CASES[key]
+
+    def _sync_demo_inputs(self, *_args):
+        use_demo = self.demo_check.isChecked()
+
+        if use_demo and not self._demo_mode_active:
+            self._manual_dicom_text = self.dicom_edit.text()
+            self._manual_brace_text = self.brace_edit.text()
+
+        self.demo_combo.setEnabled(use_demo)
+
+        if use_demo:
+            demo_case = self._selected_demo_case()
+            brace_stl = demo_case["brace_stl"]
+            self.dicom_edit.setText(demo_case["dicom_dir"])
+            self.dicom_edit.setToolTip(demo_case["dicom_dir"])
+            self.brace_edit.setText(brace_stl or "")
+            self.brace_edit.setToolTip(brace_stl or "No brace STL included for this demo case.")
+            if brace_stl:
+                self.brace_edit.setPlaceholderText("Bundled brace STL for the selected demo case")
+            else:
+                self.brace_edit.setPlaceholderText("No brace STL included for this demo case")
+            self.demo_info.setText(demo_case["description"])
+        else:
+            self.dicom_edit.setText(self._manual_dicom_text)
+            self.dicom_edit.setToolTip("")
+            self.brace_edit.setText(self._manual_brace_text)
+            self.brace_edit.setToolTip("")
+            self.brace_edit.setPlaceholderText("Optional brace geometry file…")
+            self.demo_info.setText("Select your own DICOM folder and optional brace STL file.")
+
+        for widget in (self.dicom_edit, self.dicom_browse, self.brace_edit, self.brace_browse):
+            widget.setEnabled(not use_demo)
+
+        self._demo_mode_active = use_demo
 
     # ── Progress ─────────────────────────────────────────────────────────
     def _build_progress(self) -> QFrame:
@@ -651,17 +751,36 @@ class MainWindow(QMainWindow):
         output_dir = self.out_edit.text().strip() or os.path.join(os.path.expanduser("~"), "OsteoVigil_Results")
         os.makedirs(output_dir, exist_ok=True)
 
-        dicom_dir = self.dicom_edit.text().strip() or None
-        brace_stl = self.brace_edit.text().strip() or None
+        use_demo = self.demo_check.isChecked()
+        if use_demo:
+            demo_case = self._selected_demo_case()
+            dicom_dir = demo_case["dicom_dir"]
+            brace_stl = demo_case["brace_stl"]
+            if not os.path.isdir(dicom_dir):
+                QMessageBox.warning(
+                    self,
+                    "Demo Data Missing",
+                    f"The selected demo DICOM folder was not found:\n\n{dicom_dir}",
+                )
+                return
+            if brace_stl and not os.path.isfile(brace_stl):
+                QMessageBox.warning(
+                    self,
+                    "Demo Brace Missing",
+                    f"The selected demo brace STL was not found:\n\n{brace_stl}",
+                )
+                return
+        else:
+            dicom_dir = self.dicom_edit.text().strip() or None
+            brace_stl = self.brace_edit.text().strip() or None
 
-        use_dummy = self.demo_check.isChecked()
         use_agents = self.agent_check.isChecked()
 
-        if not use_dummy and not dicom_dir:
+        if not use_demo and not dicom_dir:
             QMessageBox.warning(
                 self,
                 "No DICOM Folder",
-                "Please select a DICOM folder or enable 'Use synthetic demo data'.",
+                "Please select a DICOM folder or enable 'Use bundled demo case'.",
             )
             return
 
@@ -677,7 +796,7 @@ class MainWindow(QMainWindow):
             output_dir=output_dir,
             body_mass=self.mass_spin.value(),
             steps_per_day=self.steps_spin.value(),
-            use_dummy=use_dummy,
+            use_dummy=False,
             use_agents=use_agents,
         )
         self._worker.progress_updated.connect(self._on_progress)

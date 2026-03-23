@@ -147,6 +147,8 @@ This file is the living handoff/status document for the `OsteoVigil` project. It
   - `bootstrap.py`
   - `launch_osteovigil.command`
   - `launch_osteovigil.bat`
+- Updated the PyQt desktop app so bundled demo mode can be toggled on, a demo case can be selected, and the manual DICOM/brace inputs are disabled while demo mode is active:
+  - `desktop_app.py`
 
 ### Tests
 
@@ -174,11 +176,13 @@ PYTHONPYCACHEPREFIX=/tmp/osteovigil_pycache python3 -m compileall src tests main
 - The desktop launcher bootstrap logic is in place, but it has not yet been exercised end-to-end in this sandbox with the full dependency install.
 - The repo now has a single-command bootstrap path: `python bootstrap.py`
 - `bootstrap.py` now fails fast with a clear error if the caller uses Python older than 3.11.
+- The bundled demo folders referenced by the desktop app exist on disk and were previously validated through the DICOM loader.
 
 ### Not yet verified
 
 - Dependencies have not been installed in this sandbox.
 - `pytest` has not been run end-to-end in a fully provisioned environment.
+- The updated demo-mode controls in the desktop app have not been interactively clicked through in this sandbox.
 - The Streamlit app has not been interactively exercised here.
 - The full demo pipeline has not been run with all scientific dependencies installed.
 - FEBio execution has not been validated here.
