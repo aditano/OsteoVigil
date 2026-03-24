@@ -60,6 +60,10 @@ def configure_qt_environment(env: dict[str, str]) -> None:
 
 def configure_streamlit_environment(env: dict[str, str]) -> None:
     env.setdefault("STREAMLIT_BROWSER_GATHER_USAGE_STATS", "false")
+    env.setdefault("STREAMLIT_BROWSER_SERVER_ADDRESS", "localhost")
+    env.setdefault("STREAMLIT_SERVER_ADDRESS", "localhost")
+    env.setdefault("STREAMLIT_SERVER_FILE_WATCHER_TYPE", "none")
+    env.setdefault("STREAMLIT_SERVER_RUN_ON_SAVE", "false")
 
 
 def run_command(cmd: list[str]) -> None:

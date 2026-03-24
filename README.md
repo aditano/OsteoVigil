@@ -249,6 +249,7 @@ On first launch, the launcher now delegates to [bootstrap.py](/Users/anthonydita
 macOS note:
 
 - the `.command` launcher now opens the Streamlit interface by default to avoid a PyQt/Qt startup issue affecting some macOS environments
+- the bundled Streamlit config disables file watching and usage-stat collection to reduce noisy macOS permission prompts during startup
 - the PyQt desktop app remains available for manual testing with `python bootstrap.py --entrypoint desktop`
 
 ## Outputs

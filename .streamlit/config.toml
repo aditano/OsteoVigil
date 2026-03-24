@@ -1,2 +1,8 @@
 [browser]
 gatherUsageStats = false
+serverAddress = "localhost"
+
+[server]
+fileWatcherType = "none"
+runOnSave = false
+address = "localhost"

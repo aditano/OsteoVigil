@@ -173,6 +173,8 @@ This file is the living handoff/status document for the `OsteoVigil` project. It
 - Disabled Streamlit's first-run usage-statistics email prompt with repo-local config and bootstrap environment defaults so the macOS one-click path is less interactive:
   - `.streamlit/config.toml`
   - `bootstrap.py`
+- Disabled Streamlit file watching and run-on-save in the repo-local config to reduce noisy macOS privacy prompts during local startup:
+  - `.streamlit/config.toml`
 - Improved managed FEBio source-build setup on macOS by wiring CMake directly to the repo-local `ninja` binary and explicitly resolving `clang`/`clang++` via `xcrun` when available:
   - `src/cpt_predictor/utils/febio_manager.py`
 
