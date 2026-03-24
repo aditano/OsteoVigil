@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import tempfile
 import warnings
 from pathlib import Path
@@ -22,6 +23,39 @@ DEMO_CASES = {
 os.environ.setdefault("MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "osteovigil-mpl"))
 
 
+def _resolve_febio_candidate(explicit_path: Optional[str] = None) -> Optional[str]:
+    from .utils.febio_manager import resolve_managed_febio_executable
+
+    if explicit_path and Path(explicit_path).exists():
+        return explicit_path
+    env_value = os.getenv("FEBIO_EXE")
+    if env_value and Path(env_value).exists():
+        return env_value
+    managed = resolve_managed_febio_executable()
+    if managed and managed.exists():
+        return str(managed)
+    for candidate in ("febio4", "febio4.exe", "febio3", "febio3.exe"):
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+    return None
+
+
+def _solver_availability_status(explicit_path: Optional[str] = None) -> tuple[str, str, str]:
+    detected = _resolve_febio_candidate(explicit_path)
+    if detected:
+        return (
+            "success",
+            "Solver availability: FEBio detected",
+            f"FEBio executable found at {detected}. The completed-run banner below will confirm whether FEBio or the fallback was actually used.",
+        )
+    return (
+        "warning",
+        "Solver availability: fallback surrogate only",
+        "No FEBio executable was detected for this session, so the built-in surrogate solver will be used.",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="OsteoVigil CPT fracture prediction workflow")
     parser.add_argument("--dicom-dir", default=None, help="Path to a folder of CT DICOM slices.")
@@ -35,13 +69,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--febio-exe", default=None, help="Optional explicit FEBio executable path.")
     parser.add_argument("--body-mass-kg", type=float, default=55.0, help="Patient body mass in kilograms.")
     parser.add_argument("--steps-per-day", type=int, default=6000, help="Daily activity assumption.")
+    parser.add_argument(
+        "--target-leg",
+        choices=("auto", "left", "right"),
+        default="auto",
+        help="For bilateral or full-body CT scans, select which leg to analyze.",
+    )
     parser.add_argument("--print-manifest", action="store_true", help="Print the multi-agent manifest before running.")
     return parser
 
 
 def _runtime_overrides(args: argparse.Namespace) -> dict:
     return {
-        "input": {"allow_dummy_if_missing": bool(args.dummy_data)},
+        "input": {
+            "allow_dummy_if_missing": bool(args.dummy_data),
+            "target_leg_side": str(getattr(args, "target_leg", "auto")),
+        },
         "patient": {
             "body_mass_kg": float(args.body_mass_kg),
             "steps_per_day": int(args.steps_per_day),
@@ -69,6 +112,14 @@ def _hide_streamlit_chrome() -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def _render_solver_status(level: str, title: str, detail: str) -> None:
+    import streamlit as st
+
+    renderer = getattr(st, level, st.info)
+    renderer(title)
+    st.caption(detail)
 
 
 def _resolve_demo_case(choice: str) -> tuple[Optional[str], Optional[str], str]:
@@ -128,6 +179,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "years_to_failure_estimate": artifacts.risk.summary.get("years_to_failure_estimate")
                 if artifacts.risk
                 else 0.0,
+                "simulation_mode": artifacts.risk.summary.get("simulation_mode") if artifacts.risk else "unknown",
+                "leg_localization": artifacts.study.metadata.get("leg_localization", {}) if artifacts.study else {},
                 "report_path": str(artifacts.report_path) if artifacts.report_path else "",
                 "output_dir": str(artifacts.output_dir),
             },
@@ -146,6 +199,8 @@ def run_streamlit_app() -> None:
     _hide_streamlit_chrome()
     st.title("OsteoVigil")
     st.caption("Upload DICOM data or point to a local CT folder, then run a CPT fracture-risk workflow.")
+    availability_level, availability_title, availability_detail = _solver_availability_status()
+    _render_solver_status(availability_level, availability_title, availability_detail)
 
     if "last_run" not in st.session_state:
         st.session_state.last_run = None
@@ -161,9 +216,17 @@ def run_streamlit_app() -> None:
                 tuple(DEMO_CASES.keys()),
                 index=0,
             )
+        target_leg = st.selectbox(
+            "Target leg for bilateral/full-body CT",
+            ("auto", "left", "right"),
+            index=0,
+            help="If the scan includes both legs, choose which side to analyze. Leave on auto for ordinary lower-leg CT scans.",
+        )
         body_mass = st.number_input("Body mass (kg)", min_value=10.0, max_value=200.0, value=55.0, step=1.0)
         steps_per_day = st.number_input("Steps per day", min_value=500, max_value=30000, value=6000, step=500)
         output_dir = st.text_input("Output directory", value="outputs/streamlit_run")
+
+        _render_solver_status(availability_level, availability_title, availability_detail)
 
     dicom_dir_input = st.text_input("Local DICOM folder path", value="", disabled=use_bundled_demo)
     dicom_files = st.file_uploader(
@@ -210,7 +273,7 @@ def run_streamlit_app() -> None:
 
         pipeline = CPTFracturePipeline(
             overrides={
-                "input": {"allow_dummy_if_missing": False},
+                "input": {"allow_dummy_if_missing": False, "target_leg_side": target_leg},
                 "patient": {"body_mass_kg": float(body_mass), "steps_per_day": int(steps_per_day)},
             },
             output_dir=output_dir,
@@ -241,6 +304,7 @@ def run_streamlit_app() -> None:
             "recommendations": artifacts.risk.recommendations if artifacts.risk else [],
             "visualization_paths": dict(artifacts.visualization_paths),
             "report_path": str(artifacts.report_path) if artifacts.report_path else "",
+            "study_metadata": dict(artifacts.study.metadata) if artifacts.study else {},
         }
 
     last_run = st.session_state.last_run
@@ -249,6 +313,31 @@ def run_streamlit_app() -> None:
 
     st.success("Simulation complete")
     risk_summary = last_run.get("risk_summary", {})
+    study_metadata = last_run.get("study_metadata", {})
+    localization = study_metadata.get("leg_localization", {})
+    simulation_mode = str(risk_summary.get("simulation_mode", "unknown"))
+    if simulation_mode == "surrogate":
+        _render_solver_status(
+            "warning",
+            "Solver used for this run: fallback surrogate",
+            "This completed analysis used the built-in surrogate solver rather than FEBio.",
+        )
+    elif simulation_mode.startswith("febio"):
+        _render_solver_status(
+            "success",
+            "Solver used for this run: FEBio",
+            f"The completed analysis reported solver mode {simulation_mode}.",
+        )
+    else:
+        _render_solver_status(
+            "info",
+            f"Solver used for this run: {simulation_mode}",
+            "The completed analysis reported a non-standard solver mode.",
+        )
+    if localization.get("cropped"):
+        chosen_side = str(localization.get("target_leg_side", "unknown")).title()
+        scan_scope = str(localization.get("scan_scope", "bilateral scan")).replace("_", " ")
+        st.info(f"Detected {scan_scope} data and cropped to the {chosen_side} leg before tibia analysis.")
     if risk_summary:
         cols = st.columns(3)
         cols[0].metric("Risk", str(risk_summary.get("risk_category", "unknown")).title())

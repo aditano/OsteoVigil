@@ -134,6 +134,7 @@ class CPTFracturePipeline:
         summary_path = self.output_dir / "summary.json"
         summary_payload = {
             "output_dir": str(self.output_dir),
+            "leg_localization": artifacts.study.metadata.get("leg_localization", {}) if artifacts.study else {},
             "segmentation": artifacts.segmentation.stats if artifacts.segmentation else {},
             "mesh": artifacts.mesh.stats if artifacts.mesh else {},
             "materials": artifacts.materials.stats if artifacts.materials else {},

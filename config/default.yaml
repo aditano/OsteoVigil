@@ -16,11 +16,20 @@ input:
   dicom_dir: null
   brace_stl: null
   allow_dummy_if_missing: true
+  target_leg_side: auto
+  enable_leg_localization: true
 
 preprocessing:
   clip_range_hu: [-1000, 2500]
   target_spacing_mm: [1.0, 1.0, 1.0]
   median_filter_size: 3
+  full_body_extent_threshold_mm: 700.0
+  leg_localization_bone_threshold_hu: 220
+  leg_localization_min_component_area_px: 80
+  leg_localization_min_bilateral_run_slices: 12
+  leg_localization_min_tibfib_run_slices: 18
+  leg_localization_max_tibfib_components: 4
+  leg_localization_margin_mm: 20.0
 
 segmentation:
   strategy: auto
@@ -95,4 +104,3 @@ orchestration:
   human_in_the_loop: false
   verbose_agents: true
   use_crewai_if_available: false
-

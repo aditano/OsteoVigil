@@ -1,6 +1,6 @@
 # OsteoVigil Project Status
 
-Last updated: 2026-03-23
+Last updated: 2026-03-24
 
 ## Purpose
 
@@ -73,6 +73,9 @@ This file is the living handoff/status document for the `OsteoVigil` project. It
 - Added DICOM loading with:
   - `SimpleITK` first
   - `pydicom` fallback
+- Added preprocessing support for bilateral/full-body CT detection with left/right leg selection and tibia/fibula-focused cropping before segmentation:
+  - `src/cpt_predictor/preprocessing.py`
+  - `config/default.yaml`
 - Added synthetic CPT demo data generation.
 - Added synthetic DICOM writing for demo/smoke workflows.
 - Added two included demo cases under `data/demo/`:
@@ -151,11 +154,15 @@ This file is the living handoff/status document for the `OsteoVigil` project. It
   - `src/cpt_predictor/cli.py`
 - Added Streamlit app:
   - `streamlit_app.py`
+- Added target-leg selection to the CLI and Streamlit app so bilateral/full-body CT studies can be routed to the left or right tib/fib before analysis:
+  - `src/cpt_predictor/cli.py`
 - Updated the Streamlit app so it uses an explicit bundled-demo selector for the normal/good and abnormal/bad tibia demos instead of the older synthetic fallback wording:
   - `src/cpt_predictor/cli.py`
 - Removed the bottom JSON/code-style output from the Streamlit results view so the post-run UI focuses on charts, metrics, recommendations, and report export:
   - `src/cpt_predictor/cli.py`
 - Added a direct PDF download button to the Streamlit results view:
+  - `src/cpt_predictor/cli.py`
+- Added a clear solver-status marker to the Streamlit UI so the page shows FEBio availability before a run and explicitly reports whether the completed run used FEBio or the fallback surrogate:
   - `src/cpt_predictor/cli.py`
 - Minimized Streamlit chrome so the Deploy button and toolbar are hidden as much as practical inside the local app:
   - `src/cpt_predictor/cli.py`
@@ -200,10 +207,12 @@ This file is the living handoff/status document for the `OsteoVigil` project. It
   - material mapping behavior
   - segmentation on synthetic data
   - pipeline smoke behavior
+  - bilateral/full-body CT leg-localization preprocessing
 - Files:
   - `tests/test_materials.py`
   - `tests/test_segmentation.py`
   - `tests/test_pipeline_smoke.py`
+  - `tests/test_preprocessing.py`
 
 ## What Has Been Verified
 
