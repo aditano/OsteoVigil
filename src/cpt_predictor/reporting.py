@@ -10,6 +10,24 @@ class PDFReportBuilder:
     def __init__(self, config: Dict):
         self.config = config
 
+    @staticmethod
+    def _append_image(story, image_path: Path, *, caption: str, styles, max_width: float, max_height: float) -> None:
+        from reportlab.lib.units import inch
+        from reportlab.lib.utils import ImageReader
+        from reportlab.platypus import Image, Paragraph, Spacer
+
+        try:
+            reader = ImageReader(str(image_path))
+            image_width, image_height = reader.getSize()
+            scale = min(max_width / float(image_width), max_height / float(image_height))
+            scaled_width = float(image_width) * scale
+            scaled_height = float(image_height) * scale
+            story.append(Spacer(1, 0.12 * inch))
+            story.append(Paragraph(caption, styles["Heading2"]))
+            story.append(Image(str(image_path), width=scaled_width, height=scaled_height))
+        except Exception:
+            return
+
     def build(self, artifacts: PipelineArtifacts) -> Path:
         try:
             from reportlab.lib import colors
@@ -67,11 +85,22 @@ class PDFReportBuilder:
             for recommendation in artifacts.risk.recommendations:
                 story.append(Paragraph(f"- {recommendation}", styles["BodyText"]))
 
-        for image_key in ("stress_map", "risk_dashboard"):
+        image_specs = (
+            ("stress_heatmap_2d", "2D Stress Hotspot Heatmap"),
+            ("stress_map", "3D Stress Map"),
+            ("risk_dashboard", "Risk Dashboard"),
+        )
+        for image_key, caption in image_specs:
             image_path = artifacts.visualization_paths.get(image_key)
             if image_path and Path(image_path).exists():
-                story.append(Spacer(1, 0.15 * inch))
-                story.append(Image(image_path, width=5.5 * inch, height=3.2 * inch))
+                self._append_image(
+                    story,
+                    Path(image_path),
+                    caption=caption,
+                    styles=styles,
+                    max_width=5.9 * inch,
+                    max_height=4.2 * inch,
+                )
 
         if self.config["reporting"].get("include_disclaimer", True):
             story.append(Spacer(1, 0.2 * inch))
@@ -85,4 +114,3 @@ class PDFReportBuilder:
 
         doc.build(story)
         return report_path
-

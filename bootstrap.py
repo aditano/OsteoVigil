@@ -64,6 +64,7 @@ def configure_streamlit_environment(env: dict[str, str]) -> None:
     env.setdefault("STREAMLIT_SERVER_ADDRESS", "localhost")
     env.setdefault("STREAMLIT_SERVER_FILE_WATCHER_TYPE", "none")
     env.setdefault("STREAMLIT_SERVER_RUN_ON_SAVE", "false")
+    env.setdefault("STREAMLIT_CLIENT_TOOLBAR_MODE", "minimal")
 
 
 def run_command(cmd: list[str]) -> None:
@@ -140,6 +141,18 @@ def launch_command(entrypoint: str, entry_args: list[str]) -> list[str]:
             "-m",
             "streamlit",
             "run",
+            "--browser.gatherUsageStats",
+            "false",
+            "--browser.serverAddress",
+            "localhost",
+            "--server.address",
+            "localhost",
+            "--server.fileWatcherType",
+            "none",
+            "--server.runOnSave",
+            "false",
+            "--client.toolbarMode",
+            "minimal",
             str(REPO_ROOT / "streamlit_app.py"),
             *entry_args,
         ]

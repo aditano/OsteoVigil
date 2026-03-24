@@ -258,6 +258,7 @@ macOS note:
 - `simulation_manifest.json`
 - `tibia_mesh.vtu`
 - `material_mesh.vtu`
+- `stress_heatmap_2d.png`
 - `stress_map.png`
 - `risk_dashboard.png`
 - `interactive_mesh.html` when supported
@@ -270,6 +271,8 @@ Two demo cases are included under [data/demo/README.md](/Users/anthonyditano/Doc
 
 - `normal_real_talocrural`: a real public distal tibia/fibula/ankle DICOM series
 - `abnormal_synthetic_cpt`: a synthetic CPT-style abnormal DICOM series with a proxy brace STL
+
+In the Streamlit UI, these now appear as an explicit bundled-demo selector so you can choose the normal/good or abnormal/bad tibia demo without relying on the older synthetic fallback wording. The results view also includes a direct PDF export button and focuses on charts rather than raw JSON output.
 
 ## Next Steps / Improvements
 

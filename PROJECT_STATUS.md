@@ -119,6 +119,7 @@ This file is the living handoff/status document for the `OsteoVigil` project. It
 - Added surrogate solver fallback so the app still runs if FEBio is not installed.
 - Added stress, strain, safety factor, fatigue-cycle, and years-to-failure estimation.
 - Added visualization and PDF report generation.
+- Added a 2D stress-hotspot heatmap artifact for quicker hotspot review in the UI and report.
 - Files:
   - `src/cpt_predictor/simulator.py`
   - `src/cpt_predictor/analysis.py`
@@ -150,6 +151,15 @@ This file is the living handoff/status document for the `OsteoVigil` project. It
   - `src/cpt_predictor/cli.py`
 - Added Streamlit app:
   - `streamlit_app.py`
+- Updated the Streamlit app so it uses an explicit bundled-demo selector for the normal/good and abnormal/bad tibia demos instead of the older synthetic fallback wording:
+  - `src/cpt_predictor/cli.py`
+- Removed the bottom JSON/code-style output from the Streamlit results view so the post-run UI focuses on charts, metrics, recommendations, and report export:
+  - `src/cpt_predictor/cli.py`
+- Added a direct PDF download button to the Streamlit results view:
+  - `src/cpt_predictor/cli.py`
+- Minimized Streamlit chrome so the Deploy button and toolbar are hidden as much as practical inside the local app:
+  - `src/cpt_predictor/cli.py`
+  - `.streamlit/config.toml`
 - Added desktop launchers that bootstrap `.venv` and install `requirements.txt` automatically on first run:
   - `bootstrap.py`
   - `install_febio.py`
@@ -175,6 +185,12 @@ This file is the living handoff/status document for the `OsteoVigil` project. It
   - `bootstrap.py`
 - Disabled Streamlit file watching and run-on-save in the repo-local config to reduce noisy macOS privacy prompts during local startup:
   - `.streamlit/config.toml`
+- Added explicit Streamlit launch flags in bootstrap so the local app consistently applies the quiet startup settings even if project config is ignored:
+  - `bootstrap.py`
+- Added a `chardet` compatibility pin to reduce the Requests dependency warning seen in some local Streamlit environments:
+  - `requirements.txt`
+- On macOS, automatic FEBio source builds now fail fast with a concise OpenMP/libomp prerequisite message instead of running deep into a noisy build before stopping:
+  - `src/cpt_predictor/utils/febio_manager.py`
 - Improved managed FEBio source-build setup on macOS by wiring CMake directly to the repo-local `ninja` binary and explicitly resolving `clang`/`clang++` via `xcrun` when available:
   - `src/cpt_predictor/utils/febio_manager.py`
 

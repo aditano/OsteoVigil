@@ -21,6 +21,12 @@ MANAGED_METADATA_NAME = "install_metadata.json"
 GITHUB_API_LATEST_RELEASE = "https://api.github.com/repos/febiosoftware/FEBio/releases/latest"
 DEFAULT_CMAKE_PACKAGES = ("cmake>=3.28", "ninja>=1.11")
 FEBIO_EXECUTABLE_NAMES = ("febio4", "febio4.exe", "febio3", "febio3.exe")
+MACOS_OPENMP_HEADER_CANDIDATES = (
+    Path("/opt/homebrew/include/omp.h"),
+    Path("/opt/homebrew/opt/libomp/include/omp.h"),
+    Path("/usr/local/include/omp.h"),
+    Path("/usr/local/opt/libomp/include/omp.h"),
+)
 
 
 def _repo_root(repo_root: Optional[Path] = None) -> Path:
@@ -221,6 +227,19 @@ def _resolve_macos_compiler(tool: str) -> Optional[str]:
     return compiler_path or None
 
 
+def _macos_openmp_supported() -> bool:
+    if os.getenv("OSTEOVIGIL_ALLOW_FEBIO_MACOS_SOURCE_BUILD", "").strip().lower() in {"1", "true", "yes"}:
+        return True
+    return any(candidate.exists() for candidate in MACOS_OPENMP_HEADER_CANDIDATES)
+
+
+def _resolve_macos_openmp_include_dir() -> Optional[str]:
+    for candidate in MACOS_OPENMP_HEADER_CANDIDATES:
+        if candidate.exists():
+            return str(candidate.parent)
+    return None
+
+
 def _ensure_build_tools(python_executable: Path, verbose: bool) -> tuple[str, Optional[str]]:
     cmake_path = _find_tool("cmake", python_executable)
     ninja_path = _find_tool("ninja", python_executable)
@@ -331,6 +350,7 @@ def _install_from_source(
     if platform.system().lower() == "darwin":
         c_compiler = _resolve_macos_compiler("clang")
         cxx_compiler = _resolve_macos_compiler("clang++")
+        omp_include_dir = _resolve_macos_openmp_include_dir()
         if c_compiler and cxx_compiler:
             configure_cmd.extend(
                 [
@@ -338,6 +358,8 @@ def _install_from_source(
                     f"-DCMAKE_CXX_COMPILER={cxx_compiler}",
                 ]
             )
+        if omp_include_dir:
+            configure_cmd.append(f"-DOMP_INC={omp_include_dir}")
     if ninja_path:
         configure_cmd.extend(["-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={ninja_path}"])
 
@@ -381,6 +403,13 @@ def ensure_febio_available(
                 return installed
         except (HTTPError, URLError, RuntimeError, zipfile.BadZipFile, tarfile.TarError) as exc:
             install_errors.append(f"release asset install failed: {exc}")
+
+    if platform.system().lower() == "darwin" and not _macos_openmp_supported():
+        install_errors.append(
+            "macOS source build skipped because OpenMP headers were not found. "
+            "Install libomp or set OSTEOVIGIL_ALLOW_FEBIO_MACOS_SOURCE_BUILD=1 to retry."
+        )
+        raise RuntimeError("; ".join(install_errors))
 
     try:
         installed = _install_from_source(

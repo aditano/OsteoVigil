@@ -2,6 +2,9 @@
 gatherUsageStats = false
 serverAddress = "localhost"
 
+[client]
+toolbarMode = "minimal"
+
 [server]
 fileWatcherType = "none"
 runOnSave = false
