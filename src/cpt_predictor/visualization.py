@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Dict
@@ -18,6 +19,22 @@ class ResultVisualizer:
         self.config = config
 
     @staticmethod
+    def _should_disable_pyvista_windowing() -> bool:
+        if sys.platform != "darwin":
+            return False
+
+        flag = os.environ.get("OSTEOVIGIL_DISABLE_PYVISTA_WINDOWING", "").strip().lower()
+        if flag in {"1", "true", "yes", "on"}:
+            return True
+
+        try:
+            from streamlit.runtime.scriptrunner import get_script_run_ctx
+        except Exception:
+            return False
+
+        return get_script_run_ctx() is not None
+
+    @staticmethod
     def _get_stress_values(mesh) -> np.ndarray:
         stress = np.asarray(mesh.cell_data.get("von_mises_mpa", []), dtype=float)
         if stress.size == mesh.n_cells:
@@ -30,16 +47,91 @@ class ResultVisualizer:
         return np.zeros(1, dtype=float)
 
     @staticmethod
-    def _select_projection_axes(points: np.ndarray) -> tuple[int, int, tuple[str, str]]:
-        if points.ndim != 2 or points.shape[1] < 3 or points.shape[0] == 0:
-            return 0, 1, ("X", "Y")
+    def _build_projection_image(x: np.ndarray, y: np.ndarray, stress: np.ndarray) -> tuple[np.ndarray | None, tuple[float, float, float, float]]:
+        x_pad = max(float(np.ptp(x)) * 0.05, 1.0)
+        y_pad = max(float(np.ptp(y)) * 0.05, 1.0)
+        extent = (
+            float(np.min(x)) - x_pad,
+            float(np.max(x)) + x_pad,
+            float(np.min(y)) - y_pad,
+            float(np.max(y)) + y_pad,
+        )
 
-        extents = np.ptp(points[:, :3], axis=0)
-        order = np.argsort(extents)[::-1]
-        first = int(order[0])
-        second = int(order[1]) if len(order) > 1 else (first + 1) % 3
-        axis_labels = ("X", "Y", "Z")
-        return first, second, (axis_labels[first], axis_labels[second])
+        try:
+            grid_x, grid_y = np.mgrid[
+                extent[0] : extent[1] : 200j,
+                extent[2] : extent[3] : 200j,
+            ]
+            projected = np.column_stack([x, y])
+            grid_linear = griddata(projected, stress, (grid_x, grid_y), method="linear")
+            grid_nearest = griddata(projected, stress, (grid_x, grid_y), method="nearest")
+            heatmap = np.where(np.isnan(grid_linear), grid_nearest, grid_linear)
+            return heatmap, (grid_x.min(), grid_x.max(), grid_y.min(), grid_y.max())
+        except Exception:
+            return None, extent
+
+    def _plot_projection(
+        self,
+        ax,
+        *,
+        centers: np.ndarray,
+        stress: np.ndarray,
+        hotspot_index: int,
+        axis_a: int,
+        axis_b: int,
+        title: str,
+        x_label: str,
+        y_label: str,
+        vmin: float,
+        vmax: float,
+        show_legend: bool,
+    ):
+        projected = centers[:, [axis_a, axis_b]]
+        x = projected[:, 0]
+        y = projected[:, 1]
+        hotspot_point = projected[hotspot_index]
+
+        heatmap, extent = self._build_projection_image(x, y, stress)
+        if heatmap is not None:
+            image = ax.imshow(
+                heatmap.T,
+                origin="lower",
+                extent=extent,
+                cmap="inferno",
+                aspect="auto",
+                vmin=vmin,
+                vmax=vmax,
+            )
+        else:
+            image = ax.scatter(
+                x,
+                y,
+                c=stress,
+                cmap="inferno",
+                s=26,
+                alpha=0.8,
+                edgecolors="none",
+                vmin=vmin,
+                vmax=vmax,
+            )
+            ax.set_facecolor("#140f0a")
+
+        ax.scatter(
+            [hotspot_point[0]],
+            [hotspot_point[1]],
+            s=140,
+            facecolors="none",
+            edgecolors="cyan",
+            linewidths=2.0,
+            marker="o",
+            label="Peak stress",
+        )
+        ax.set_title(title)
+        ax.set_xlabel(x_label)
+        ax.set_ylabel(y_label)
+        if show_legend:
+            ax.legend(loc="upper right", frameon=True)
+        return image
 
     def _save_hotspot_heatmap(self, simulation: SimulationResult, output_dir: Path) -> Path:
         mesh = simulation.mesh
@@ -62,62 +154,44 @@ class ResultVisualizer:
             else:
                 stress = np.zeros(centers.shape[0], dtype=float)
 
-        axis_a, axis_b, axis_labels = self._select_projection_axes(centers)
-        projected = centers[:, [axis_a, axis_b]]
-        x = projected[:, 0]
-        y = projected[:, 1]
         finite_mask = np.isfinite(stress)
         if not finite_mask.any():
             stress = np.zeros_like(stress)
             finite_mask = np.ones_like(stress, dtype=bool)
         hotspot_index = int(np.nanargmax(np.where(finite_mask, stress, -np.inf)))
-        hotspot_point = projected[hotspot_index]
 
-        x_pad = max(float(np.ptp(x)) * 0.05, 1.0)
-        y_pad = max(float(np.ptp(y)) * 0.05, 1.0)
-        heatmap = None
-        extent = None
-        try:
-            grid_x, grid_y = np.mgrid[
-                (float(np.min(x)) - x_pad) : (float(np.max(x)) + x_pad) : 200j,
-                (float(np.min(y)) - y_pad) : (float(np.max(y)) + y_pad) : 200j,
-            ]
-            grid_linear = griddata(projected, stress, (grid_x, grid_y), method="linear")
-            grid_nearest = griddata(projected, stress, (grid_x, grid_y), method="nearest")
-            heatmap = np.where(np.isnan(grid_linear), grid_nearest, grid_linear)
-            extent = (grid_x.min(), grid_x.max(), grid_y.min(), grid_y.max())
-        except Exception:
-            extent = (float(np.min(x)) - x_pad, float(np.max(x)) + x_pad, float(np.min(y)) - y_pad, float(np.max(y)) + y_pad)
+        finite_stress = stress[finite_mask]
+        vmin = float(np.min(finite_stress))
+        vmax = float(np.max(finite_stress))
+        if vmax <= vmin:
+            vmax = vmin + 1.0
 
-        fig, ax = plt.subplots(figsize=(8.5, 6.5))
-        if heatmap is not None:
-            image = ax.imshow(
-                heatmap.T,
-                origin="lower",
-                extent=extent,
-                cmap="inferno",
-                aspect="auto",
-            )
-        else:
-            image = ax.scatter(x, y, c=stress, cmap="inferno", s=26, alpha=0.8, edgecolors="none")
-            ax.set_facecolor("#140f0a")
-        ax.scatter(
-            [hotspot_point[0]],
-            [hotspot_point[1]],
-            s=140,
-            facecolors="none",
-            edgecolors="cyan",
-            linewidths=2.0,
-            marker="o",
-            label="Peak stress",
+        fig, axes = plt.subplots(1, 2, figsize=(13.5, 6.5))
+        projection_specs = (
+            ("AP View", 0, 2, "X position", "Z position"),
+            ("Lateral View", 1, 2, "Y position", "Z position"),
         )
-        ax.set_title("2D Stress Hotspot Heatmap")
-        ax.set_xlabel(f"{axis_labels[0]} position")
-        ax.set_ylabel(f"{axis_labels[1]} position")
-        ax.legend(loc="upper right", frameon=True)
-        cbar = fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
+        image = None
+        for index, (title, axis_a, axis_b, x_label, y_label) in enumerate(projection_specs):
+            image = self._plot_projection(
+                axes[index],
+                centers=centers,
+                stress=stress,
+                hotspot_index=hotspot_index,
+                axis_a=axis_a,
+                axis_b=axis_b,
+                title=title,
+                x_label=x_label,
+                y_label=y_label,
+                vmin=vmin,
+                vmax=vmax,
+                show_legend=index == 0,
+            )
+
+        fig.suptitle("2D Stress Hotspot Heatmaps", fontsize=14)
+        fig.subplots_adjust(top=0.88, right=0.88, wspace=0.24)
+        cbar = fig.colorbar(image, ax=axes, fraction=0.03, pad=0.04)
         cbar.set_label("Von Mises stress (MPa)")
-        fig.tight_layout()
         heatmap_path = output_dir / "stress_heatmap_2d.png"
         fig.savefig(heatmap_path, dpi=200, bbox_inches="tight")
         plt.close(fig)
@@ -151,6 +225,33 @@ class ResultVisualizer:
 
     def _save_pyvista_plot(self, simulation: SimulationResult, output_dir: Path) -> Dict[str, str]:
         try:
+            if self._should_disable_pyvista_windowing():
+                placeholder_path = output_dir / "stress_map_disabled.png"
+                fig, ax = plt.subplots(figsize=(9, 5))
+                ax.axis("off")
+                ax.text(
+                    0.5,
+                    0.62,
+                    "3D VTK preview disabled on macOS Streamlit",
+                    ha="center",
+                    va="center",
+                    fontsize=15,
+                    fontweight="bold",
+                )
+                ax.text(
+                    0.5,
+                    0.42,
+                    "PyVista rendering is skipped here to avoid AppKit window creation\n"
+                    "from a background thread. The 2D stress map and report still render normally.",
+                    ha="center",
+                    va="center",
+                    fontsize=11,
+                )
+                fig.tight_layout()
+                fig.savefig(placeholder_path, dpi=200, bbox_inches="tight")
+                plt.close(fig)
+                return {"stress_map": str(placeholder_path), "interactive_html": ""}
+
             import pyvista as pv
 
             if hasattr(pv, "system_supports_plotting") and not pv.system_supports_plotting():

@@ -86,7 +86,7 @@ class PDFReportBuilder:
                 story.append(Paragraph(f"- {recommendation}", styles["BodyText"]))
 
         image_specs = (
-            ("stress_heatmap_2d", "2D Stress Hotspot Heatmap"),
+            ("stress_heatmap_2d", "Stress Heatmaps (AP and Lateral Views)"),
             ("stress_map", "3D Stress Map"),
             ("risk_dashboard", "Risk Dashboard"),
         )

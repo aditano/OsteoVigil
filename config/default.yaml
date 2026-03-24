@@ -30,6 +30,7 @@ preprocessing:
   leg_localization_min_tibfib_run_slices: 18
   leg_localization_max_tibfib_components: 4
   leg_localization_margin_mm: 20.0
+  leg_localization_min_interleg_gap_mm: 35.0
 
 segmentation:
   strategy: auto

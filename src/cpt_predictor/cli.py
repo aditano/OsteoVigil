@@ -150,6 +150,96 @@ def _load_uploads_to_tempdir(files, prefix: str) -> Optional[str]:
     return str(upload_dir)
 
 
+def _run_streamlit_pipeline(
+    *,
+    dicom_dir: str,
+    brace_path: Optional[str],
+    use_agents: bool,
+    target_leg: str,
+    body_mass: float,
+    steps_per_day: int,
+    output_dir: str,
+):
+    from .agents.crew import PipelineCrewOrchestrator
+    from .pipeline import CPTFracturePipeline
+
+    import streamlit as st
+
+    progress_bar = st.progress(0)
+    status = st.empty()
+
+    def progress(stage: str, fraction: float) -> None:
+        progress_bar.progress(min(max(float(fraction), 0.0), 1.0))
+        status.write(stage)
+
+    pipeline = CPTFracturePipeline(
+        overrides={
+            "input": {"allow_dummy_if_missing": False, "target_leg_side": target_leg},
+            "patient": {"body_mass_kg": float(body_mass), "steps_per_day": int(steps_per_day)},
+        },
+        output_dir=output_dir,
+    )
+    if use_agents:
+        return PipelineCrewOrchestrator(pipeline).run(
+            dicom_dir=dicom_dir,
+            brace_stl=brace_path,
+            human_in_the_loop=False,
+            progress=progress,
+        )
+    return pipeline.run(
+        dicom_dir=dicom_dir,
+        brace_stl=brace_path,
+        use_agents=False,
+        human_in_the_loop=False,
+        progress=progress,
+    )
+
+
+def _store_streamlit_run(artifacts) -> dict:
+    return {
+        "risk_summary": artifacts.risk.summary if artifacts.risk else {},
+        "recommendations": artifacts.risk.recommendations if artifacts.risk else [],
+        "visualization_paths": dict(artifacts.visualization_paths),
+        "report_path": str(artifacts.report_path) if artifacts.report_path else "",
+        "study_metadata": dict(artifacts.study.metadata) if artifacts.study else {},
+    }
+
+
+def _resolve_streamlit_inputs(
+    *,
+    use_bundled_demo: bool,
+    demo_case: Optional[str],
+    dicom_dir_input: str,
+    dicom_files,
+    brace_file,
+):
+    dicom_dir = None
+    brace_path = None
+
+    if use_bundled_demo:
+        if demo_case is None:
+            raise ValueError("Select a bundled demo case.")
+        dicom_dir, brace_path, _ = _resolve_demo_case(demo_case)
+        if not dicom_dir:
+            raise FileNotFoundError("The selected demo DICOM folder is missing.")
+        return dicom_dir, brace_path
+
+    if dicom_dir_input.strip():
+        dicom_dir = dicom_dir_input.strip()
+    elif dicom_files:
+        dicom_dir = _load_uploads_to_tempdir(dicom_files, "osteovigil_dicom_")
+    else:
+        raise ValueError("Select a DICOM folder, upload DICOM slices, or enable bundled demo data.")
+
+    if brace_file is not None:
+        brace_dir = Path(tempfile.mkdtemp(prefix="osteovigil_brace_"))
+        brace_path_obj = brace_dir / brace_file.name
+        brace_path_obj.write_bytes(brace_file.getbuffer())
+        brace_path = str(brace_path_obj)
+
+    return dicom_dir, brace_path
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     from .agents.crew import PipelineCrewOrchestrator, build_crew_manifest
     from .pipeline import CPTFracturePipeline
@@ -192,8 +282,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 def run_streamlit_app() -> None:
     import streamlit as st
-    from .agents.crew import PipelineCrewOrchestrator
-    from .pipeline import CPTFracturePipeline
+    from .preprocessing import MultipleLegSelectionRequiredError
+
+    # Tell the runtime layer to avoid PyVista/VTK window creation on macOS.
+    os.environ.setdefault("OSTEOVIGIL_DISABLE_PYVISTA_WINDOWING", "1")
+    os.environ.setdefault("PYVISTA_OFF_SCREEN", "1")
+    os.environ.setdefault("PYVISTA_USE_PANEL", "0")
 
     st.set_page_config(page_title="OsteoVigil", layout="wide")
     _hide_streamlit_chrome()
@@ -204,6 +298,8 @@ def run_streamlit_app() -> None:
 
     if "last_run" not in st.session_state:
         st.session_state.last_run = None
+    if "pending_leg_selection" not in st.session_state:
+        st.session_state.pending_leg_selection = None
 
     with st.sidebar:
         st.header("Options")
@@ -216,12 +312,6 @@ def run_streamlit_app() -> None:
                 tuple(DEMO_CASES.keys()),
                 index=0,
             )
-        target_leg = st.selectbox(
-            "Target leg for bilateral/full-body CT",
-            ("auto", "left", "right"),
-            index=0,
-            help="If the scan includes both legs, choose which side to analyze. Leave on auto for ordinary lower-leg CT scans.",
-        )
         body_mass = st.number_input("Body mass (kg)", min_value=10.0, max_value=200.0, value=55.0, step=1.0)
         steps_per_day = st.number_input("Steps per day", min_value=500, max_value=30000, value=6000, step=500)
         output_dir = st.text_input("Output directory", value="outputs/streamlit_run")
@@ -238,74 +328,79 @@ def run_streamlit_app() -> None:
     brace_file = st.file_uploader("Optional brace STL", type=["stl"], disabled=use_bundled_demo)
 
     run_clicked = st.button("Run Simulation", type="primary")
-    if run_clicked:
-        dicom_dir = None
-        brace_path = None
-
-        if use_bundled_demo:
-            if demo_case is None:
-                st.error("Select a bundled demo case.")
-                return
-            dicom_dir, brace_path, _ = _resolve_demo_case(demo_case)
-            if not dicom_dir:
-                st.error("The selected demo DICOM folder is missing.")
-                return
-        elif dicom_dir_input.strip():
-            dicom_dir = dicom_dir_input.strip()
-        elif dicom_files:
-            dicom_dir = _load_uploads_to_tempdir(dicom_files, "osteovigil_dicom_")
-        else:
-            st.error("Select a DICOM folder, upload DICOM slices, or enable bundled demo data.")
-            return
-
-        if not use_bundled_demo and brace_file is not None:
-            brace_dir = Path(tempfile.mkdtemp(prefix="osteovigil_brace_"))
-            brace_path_obj = brace_dir / brace_file.name
-            brace_path_obj.write_bytes(brace_file.getbuffer())
-            brace_path = str(brace_path_obj)
-
-        progress_bar = st.progress(0)
-        status = st.empty()
-
-        def progress(stage: str, fraction: float) -> None:
-            progress_bar.progress(min(max(float(fraction), 0.0), 1.0))
-            status.write(stage)
-
-        pipeline = CPTFracturePipeline(
-            overrides={
-                "input": {"allow_dummy_if_missing": False, "target_leg_side": target_leg},
-                "patient": {"body_mass_kg": float(body_mass), "steps_per_day": int(steps_per_day)},
-            },
-            output_dir=output_dir,
+    pending_leg_selection = st.session_state.pending_leg_selection
+    selected_pending_leg = None
+    continue_clicked = False
+    if pending_leg_selection:
+        scan_scope = str(pending_leg_selection.get("scan_scope", "multi-leg scan")).replace("_", " ")
+        st.warning(f"Detected {scan_scope} data. Choose which leg to analyze to continue.")
+        selected_pending_leg = st.selectbox(
+            "Leg to analyze",
+            ("left", "right"),
+            key="pending_leg_choice",
+            help="This option only appears when the uploaded scan includes more than one leg.",
         )
+        continue_clicked = st.button("Analyze Selected Leg")
+
+    if run_clicked:
         try:
-            if use_agents:
-                artifacts = PipelineCrewOrchestrator(pipeline).run(
-                    dicom_dir=dicom_dir,
-                    brace_stl=brace_path,
-                    human_in_the_loop=False,
-                    progress=progress,
-                )
-            else:
-                artifacts = pipeline.run(
-                    dicom_dir=dicom_dir,
-                    brace_stl=brace_path,
-                    use_agents=False,
-                    human_in_the_loop=False,
-                    progress=progress,
-                )
+            dicom_dir, brace_path = _resolve_streamlit_inputs(
+                use_bundled_demo=use_bundled_demo,
+                demo_case=demo_case,
+                dicom_dir_input=dicom_dir_input,
+                dicom_files=dicom_files,
+                brace_file=brace_file,
+            )
+            artifacts = _run_streamlit_pipeline(
+                dicom_dir=dicom_dir,
+                brace_path=brace_path,
+                use_agents=use_agents,
+                target_leg="auto",
+                body_mass=float(body_mass),
+                steps_per_day=int(steps_per_day),
+                output_dir=output_dir,
+            )
+        except MultipleLegSelectionRequiredError as exc:
+            st.session_state.last_run = None
+            st.session_state.pending_leg_selection = {
+                "dicom_dir": dicom_dir,
+                "brace_path": brace_path,
+                "use_agents": bool(use_agents),
+                "body_mass": float(body_mass),
+                "steps_per_day": int(steps_per_day),
+                "output_dir": output_dir,
+                "scan_scope": exc.scan_scope,
+            }
+            st.rerun()
+        except Exception as exc:
+            st.session_state.last_run = None
+            st.session_state.pending_leg_selection = None
+            st.error(f"Simulation failed: {exc}")
+            return
+        st.session_state.pending_leg_selection = None
+        st.session_state.last_run = _store_streamlit_run(artifacts)
+
+    if continue_clicked:
+        pending_leg_selection = st.session_state.pending_leg_selection
+        if not pending_leg_selection:
+            st.error("There is no pending multi-leg scan to continue.")
+            return
+        try:
+            artifacts = _run_streamlit_pipeline(
+                dicom_dir=str(pending_leg_selection["dicom_dir"]),
+                brace_path=pending_leg_selection.get("brace_path"),
+                use_agents=bool(pending_leg_selection.get("use_agents", False)),
+                target_leg=str(selected_pending_leg or "left"),
+                body_mass=float(pending_leg_selection.get("body_mass", body_mass)),
+                steps_per_day=int(pending_leg_selection.get("steps_per_day", steps_per_day)),
+                output_dir=str(pending_leg_selection.get("output_dir", output_dir)),
+            )
         except Exception as exc:
             st.session_state.last_run = None
             st.error(f"Simulation failed: {exc}")
             return
-
-        st.session_state.last_run = {
-            "risk_summary": artifacts.risk.summary if artifacts.risk else {},
-            "recommendations": artifacts.risk.recommendations if artifacts.risk else [],
-            "visualization_paths": dict(artifacts.visualization_paths),
-            "report_path": str(artifacts.report_path) if artifacts.report_path else "",
-            "study_metadata": dict(artifacts.study.metadata) if artifacts.study else {},
-        }
+        st.session_state.pending_leg_selection = None
+        st.session_state.last_run = _store_streamlit_run(artifacts)
 
     last_run = st.session_state.last_run
     if not last_run:
@@ -348,10 +443,15 @@ def run_streamlit_app() -> None:
             st.write(f"- {recommendation}")
 
     visualization_paths = last_run.get("visualization_paths", {})
+    visualization_captions = {
+        "stress_heatmap_2d": "Stress Heatmaps (AP and Lateral Views)",
+        "stress_map": "3D Stress Map",
+        "risk_dashboard": "Risk Dashboard",
+    }
     for key in ("stress_heatmap_2d", "stress_map", "risk_dashboard"):
         path = visualization_paths.get(key)
         if path and Path(path).exists():
-            st.image(path, caption=key.replace("_", " ").title())
+            st.image(path, caption=visualization_captions.get(key, key.replace("_", " ").title()))
 
     report_path = last_run.get("report_path", "")
     if report_path and Path(report_path).exists():

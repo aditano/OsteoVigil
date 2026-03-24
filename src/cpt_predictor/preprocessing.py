@@ -17,6 +17,14 @@ from .io.dicom_loader import CTVolume
 from .models import StudyData
 
 
+class MultipleLegSelectionRequiredError(ValueError):
+    def __init__(self, scan_scope: str):
+        self.scan_scope = scan_scope
+        super().__init__(
+            "A bilateral or full-body CT was detected. Please choose the left or right leg and run again."
+        )
+
+
 def clip_hu(volume: CTVolume, lower_hu: float = -1000.0, upper_hu: float = 2500.0) -> CTVolume:
     clipped = np.clip(volume.array.astype(np.float32), lower_hu, upper_hu)
     return replace(volume, array=clipped)
@@ -68,6 +76,36 @@ def _slice_components(binary_slice: np.ndarray, min_area: int) -> list[dict[str,
             }
         )
     return sorted(components, key=lambda item: item["centroid_x"])
+
+
+def _split_components_by_largest_gap(
+    components: list[dict[str, float]],
+    min_interleg_gap_px: int,
+) -> tuple[list[dict[str, float]], list[dict[str, float]]] | None:
+    if len(components) < 2:
+        return None
+
+    largest_gap = 0.0
+    split_index: int | None = None
+    for index in range(len(components) - 1):
+        gap = max(0.0, float(components[index + 1]["x0"] - components[index]["x1"]))
+        if gap > largest_gap:
+            largest_gap = gap
+            split_index = index
+
+    if split_index is None or largest_gap < float(min_interleg_gap_px):
+        return None
+
+    return components[: split_index + 1], components[split_index + 1 :]
+
+
+def _component_group_bounds(components: list[dict[str, float]]) -> tuple[float, float, float, float]:
+    return (
+        float(min(component["x0"] for component in components)),
+        float(max(component["x1"] for component in components)),
+        float(min(component["y0"] for component in components)),
+        float(max(component["y1"] for component in components)),
+    )
 
 
 def _longest_true_run(mask: np.ndarray, min_length: int) -> tuple[int, int] | None:
@@ -134,7 +172,9 @@ def _select_leg_crop_bounds(study: StudyData, config: Any) -> StudyData:
     min_tibfib_run = int(_config_get(config, "preprocessing.leg_localization_min_tibfib_run_slices", 18))
     max_tibfib_components = int(_config_get(config, "preprocessing.leg_localization_max_tibfib_components", 4))
     crop_margin_mm = float(_config_get(config, "preprocessing.leg_localization_margin_mm", 20.0))
+    min_interleg_gap_mm = float(_config_get(config, "preprocessing.leg_localization_min_interleg_gap_mm", 35.0))
     full_body_extent_mm = float(_config_get(config, "preprocessing.full_body_extent_threshold_mm", 700.0))
+    min_interleg_gap_px = max(1, int(np.ceil(min_interleg_gap_mm / study.spacing_zyx[2])))
 
     bone_mask = study.hu_volume > threshold_hu
     if not bone_mask.any():
@@ -143,7 +183,11 @@ def _select_leg_crop_bounds(study: StudyData, config: Any) -> StudyData:
         return replace(study, metadata=metadata)
 
     slice_components = [_slice_components(bone_mask[z_index], min_component_area) for z_index in range(bone_mask.shape[0])]
-    bilateral_flags = np.array([len(components) >= 2 for components in slice_components], dtype=bool)
+    slice_groups = [_split_components_by_largest_gap(components, min_interleg_gap_px) for components in slice_components]
+    bilateral_flags = np.array(
+        [groups is not None for groups in slice_groups],
+        dtype=bool,
+    )
     bilateral_run = _longest_true_run(bilateral_flags, min_bilateral_run)
     extent_mm = float(study.hu_volume.shape[0] * study.spacing_zyx[0])
     scan_scope = "single_leg"
@@ -163,42 +207,22 @@ def _select_leg_crop_bounds(study: StudyData, config: Any) -> StudyData:
         return replace(study, metadata=metadata)
 
     if target_leg == "auto":
-        raise ValueError(
-            "A bilateral or full-body CT was detected. Please choose the left or right leg and run again."
-        )
+        raise MultipleLegSelectionRequiredError(scan_scope)
 
     x_margin = max(4, int(np.ceil(crop_margin_mm / study.spacing_zyx[2])))
     y_margin = max(4, int(np.ceil(crop_margin_mm / study.spacing_zyx[1])))
     z_margin = max(2, int(np.ceil((0.5 * crop_margin_mm) / study.spacing_zyx[0])))
 
-    bilateral_mask = bone_mask[bilateral_run[0] : bilateral_run[1]]
-    occupancy_x = bilateral_mask.sum(axis=(0, 1)).astype(np.float32)
-    occupied_x = np.where(occupancy_x > 0)[0]
-    if occupied_x.size < 2:
-        raise ValueError("Could not isolate the requested leg from the bilateral CT.")
-    min_x = int(occupied_x.min())
-    max_x = int(occupied_x.max()) + 1
-    split_search = occupancy_x[min_x:max_x]
-    split_x = int(min_x + int(np.argmin(split_search)))
-    if split_x <= min_x or split_x >= max_x - 1:
-        split_x = int(0.5 * (min_x + max_x))
-
-    if target_leg == "left":
-        x0 = max(0, min_x - x_margin)
-        x1 = min(study.hu_volume.shape[2], split_x + x_margin)
-    else:
-        x0 = max(0, split_x - x_margin)
-        x1 = min(study.hu_volume.shape[2], max_x + x_margin)
-
-    side_mask = bone_mask[:, :, x0:x1]
-    side_slice_counts = np.array(
-        [len(_slice_components(side_mask[z_index], min_component_area)) for z_index in range(side_mask.shape[0])],
-        dtype=int,
-    )
-    tibfib_flags = (side_slice_counts >= 2) & (side_slice_counts <= max_tibfib_components)
+    selected_group_index = 0 if target_leg == "left" else 1
+    selected_groups = [
+        groups[selected_group_index] if groups is not None else []
+        for groups in slice_groups
+    ]
+    selected_group_counts = np.array([len(group) for group in selected_groups], dtype=int)
+    tibfib_flags = bilateral_flags & (selected_group_counts >= 2) & (selected_group_counts <= max_tibfib_components)
     tibfib_run = _longest_true_run(tibfib_flags, min_tibfib_run)
     if tibfib_run is None:
-        fallback_flags = side_slice_counts >= 1
+        fallback_flags = bilateral_flags & (selected_group_counts >= 1)
         tibfib_run = _longest_true_run(fallback_flags, min_tibfib_run)
     if tibfib_run is None:
         raise ValueError("Could not find a stable tibia/fibula region in the selected leg.")
@@ -206,7 +230,21 @@ def _select_leg_crop_bounds(study: StudyData, config: Any) -> StudyData:
     z0 = max(0, tibfib_run[0] - z_margin)
     z1 = min(study.hu_volume.shape[0], tibfib_run[1] + z_margin)
 
-    cropped_mask = side_mask[z0:z1]
+    tibfib_groups = [group for group in selected_groups[tibfib_run[0] : tibfib_run[1]] if group]
+    if not tibfib_groups:
+        raise ValueError("Could not isolate the requested leg from the bilateral CT.")
+
+    group_bounds = [_component_group_bounds(group) for group in tibfib_groups]
+    x0_values = np.array([bounds[0] for bounds in group_bounds], dtype=float)
+    x1_values = np.array([bounds[1] for bounds in group_bounds], dtype=float)
+    if len(group_bounds) >= 6:
+        coarse_x0 = max(0, int(np.floor(np.percentile(x0_values, 10.0))) - x_margin)
+        coarse_x1 = min(study.hu_volume.shape[2], int(np.ceil(np.percentile(x1_values, 90.0))) + x_margin)
+    else:
+        coarse_x0 = max(0, int(np.floor(np.min(x0_values))) - x_margin)
+        coarse_x1 = min(study.hu_volume.shape[2], int(np.ceil(np.max(x1_values))) + x_margin)
+
+    cropped_mask = bone_mask[z0:z1, :, coarse_x0:coarse_x1]
     coords = np.argwhere(cropped_mask)
     if coords.size == 0:
         raise ValueError("The selected leg crop did not contain any osseous voxels.")
@@ -215,11 +253,11 @@ def _select_leg_crop_bounds(study: StudyData, config: Any) -> StudyData:
     y1 = min(study.hu_volume.shape[1], int(coords[:, 1].max()) + 1 + y_margin)
     x_local_min = int(coords[:, 2].min())
     x_local_max = int(coords[:, 2].max()) + 1
-    x0 = max(0, x0 + x_local_min - x_margin)
-    x1 = min(study.hu_volume.shape[2], x0 + (x_local_max - x_local_min) + 2 * x_margin)
+    x0 = max(0, coarse_x0 + x_local_min - x_margin)
+    x1 = min(study.hu_volume.shape[2], coarse_x0 + x_local_max + x_margin)
     if x1 <= x0:
         x0 = max(0, x0 - x_margin)
-        x1 = min(study.hu_volume.shape[2], x0 + max(8, x_local_max - x_local_min + 2 * x_margin))
+        x1 = min(study.hu_volume.shape[2], coarse_x0 + x_local_max + 2 * x_margin)
 
     localization_metadata = {
         "detected": True,
