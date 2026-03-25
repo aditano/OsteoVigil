@@ -86,6 +86,12 @@ simulation:
   surrogate_if_febio_unavailable: true
   time_steps: 10
   step_size: 0.1
+  febio_solver_type: auto
+  febio_iterative_solver_min_elements: 200000
+  febio_lsiter: 10
+  febio_lsmin: 1.0e-15
+  febio_cg_method: 0
+  febio_preconditioner: 1
   fatigue_constant: 500000.0
   fatigue_exponent: 7.5
 

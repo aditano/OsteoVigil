@@ -32,6 +32,14 @@ class FEBioRunner:
                 return resolved
         return None
 
+    def _febio_command(self, executable: str, febio_setup: FEBioSetup, output_dir: Path) -> list[str]:
+        feb_path = Path(febio_setup.feb_path)
+        try:
+            model_arg = str(feb_path.relative_to(output_dir))
+        except ValueError:
+            model_arg = feb_path.name if feb_path.parent == output_dir else str(feb_path)
+        return [executable, "-i", model_arg]
+
     def _slice_area_profile(self, segmentation: SegmentationResult, study: StudyData) -> np.ndarray:
         return segmentation.mask.sum(axis=(1, 2)).astype(float) * study.spacing_zyx[1] * study.spacing_zyx[2]
 
@@ -163,10 +171,11 @@ class FEBioRunner:
     ) -> SimulationResult:
         output_dir.mkdir(parents=True, exist_ok=True)
         executable = self._resolve_febio_executable()
+        allow_surrogate_fallback = bool(self.config["simulation"].get("surrogate_if_febio_unavailable", True))
         should_try_febio = bool(self.config["simulation"].get("prefer_febio", True)) and executable
 
         if should_try_febio:
-            command = [executable, "-i", str(febio_setup.feb_path)]
+            command = self._febio_command(executable, febio_setup, output_dir)
             completed = subprocess.run(
                 command,
                 cwd=output_dir,
@@ -179,14 +188,64 @@ class FEBioRunner:
                 (completed.stdout or "") + "\n\nSTDERR\n" + (completed.stderr or ""),
                 encoding="utf-8",
             )
-            if completed.returncode == 0 and not self.config["simulation"].get("surrogate_if_febio_unavailable", True):
+            if completed.returncode == 0:
+                surrogate_result = self._run_surrogate(study, segmentation, material_result, brace, output_dir)
+                summary = dict(surrogate_result.summary)
+                summary.update(
+                    {
+                        "mode": "febio_completed_surrogate_postprocess",
+                        "febio_return_code": int(completed.returncode),
+                        "febio_command": command,
+                    }
+                )
                 return SimulationResult(
-                    mode="febio_export_only",
-                    mesh=material_result.mesh,
-                    mesh_path=material_result.mesh_path,
-                    summary={"mode": "febio_export_only", "return_code": 0},
+                    mode="febio_completed_surrogate_postprocess",
+                    mesh=surrogate_result.mesh,
+                    mesh_path=surrogate_result.mesh_path,
+                    summary=summary,
                     log_path=log_path,
                     raw_stdout=completed.stdout,
                 )
 
-        return self._run_surrogate(study, segmentation, material_result, brace, output_dir)
+            if not allow_surrogate_fallback:
+                raise RuntimeError(
+                    "FEBio execution failed. See "
+                    f"{log_path}"
+                    " for details."
+                )
+
+            surrogate_result = self._run_surrogate(study, segmentation, material_result, brace, output_dir)
+            summary = dict(surrogate_result.summary)
+            summary.update(
+                {
+                    "mode": "surrogate_febio_failed",
+                    "febio_return_code": int(completed.returncode),
+                    "febio_command": command,
+                    "febio_log_path": str(log_path),
+                }
+            )
+            return SimulationResult(
+                mode="surrogate_febio_failed",
+                mesh=surrogate_result.mesh,
+                mesh_path=surrogate_result.mesh_path,
+                summary=summary,
+                log_path=log_path,
+                raw_stdout=completed.stdout,
+            )
+
+        elif bool(self.config["simulation"].get("prefer_febio", True)) and not allow_surrogate_fallback:
+            raise RuntimeError("FEBio was requested, but no FEBio executable was found.")
+
+        surrogate_result = self._run_surrogate(study, segmentation, material_result, brace, output_dir)
+        if bool(self.config["simulation"].get("prefer_febio", True)) and not executable:
+            summary = dict(surrogate_result.summary)
+            summary.update({"mode": "surrogate_no_febio"})
+            return SimulationResult(
+                mode="surrogate_no_febio",
+                mesh=surrogate_result.mesh,
+                mesh_path=surrogate_result.mesh_path,
+                summary=summary,
+                log_path=surrogate_result.log_path,
+                raw_stdout=surrogate_result.raw_stdout,
+            )
+        return surrogate_result

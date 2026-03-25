@@ -28,6 +28,47 @@ class FEBioModelBuilder:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
 
+    def _resolve_solver_type(self, element_count: int) -> str:
+        requested = str(self.config["simulation"].get("febio_solver_type", "auto")).strip() or "auto"
+        requested_lower = requested.lower()
+        if requested_lower != "auto":
+            return requested
+        iterative_threshold = int(self.config["simulation"].get("febio_iterative_solver_min_elements", 200000))
+        if element_count >= iterative_threshold:
+            return "CG-solid"
+        return "solid"
+
+    def _build_solver_tag(self, control: ET.Element, element_count: int) -> str:
+        solver_type = self._resolve_solver_type(element_count)
+        solver_attrs = {"type": solver_type} if solver_type != "solid" else {}
+        solver = ET.SubElement(control, "solver", solver_attrs)
+
+        ET.SubElement(solver, "dtol").text = f"{float(self.config['simulation'].get('febio_dtol', 1.0e-3)):.6g}"
+        ET.SubElement(solver, "etol").text = f"{float(self.config['simulation'].get('febio_etol', 1.0e-2)):.6g}"
+        ET.SubElement(solver, "rtol").text = f"{float(self.config['simulation'].get('febio_rtol', 0.0)):.6g}"
+        ET.SubElement(solver, "lstol").text = f"{float(self.config['simulation'].get('febio_lstol', 0.9)):.6g}"
+        ET.SubElement(solver, "min_residual").text = f"{float(self.config['simulation'].get('febio_min_residual', 1.0e-20)):.6g}"
+
+        if solver_type == "CG-solid":
+            ET.SubElement(solver, "lsmin").text = f"{float(self.config['simulation'].get('febio_lsmin', 1.0e-15)):.6g}"
+            ET.SubElement(solver, "lsiter").text = str(int(self.config["simulation"].get("febio_lsiter", 10)))
+            ET.SubElement(solver, "cgmethod").text = str(int(self.config["simulation"].get("febio_cg_method", 0)))
+            ET.SubElement(solver, "preconditioner").text = str(
+                int(self.config["simulation"].get("febio_preconditioner", 1))
+            )
+            return solver_type
+
+        ET.SubElement(solver, "max_refs").text = str(int(self.config["simulation"].get("febio_max_refs", 25)))
+        ET.SubElement(solver, "diverge_reform").text = "1"
+        ET.SubElement(solver, "reform_each_time_step").text = "1"
+        qn_method = ET.SubElement(
+            solver,
+            "qn_method",
+            {"type": str(self.config["simulation"].get("febio_qn_method", "BFGS"))},
+        )
+        ET.SubElement(qn_method, "max_ups").text = str(int(self.config["simulation"].get("febio_qn_max_ups", 10)))
+        return solver_type
+
     def _build_node_sets(self, mesh: Any, brace: BraceModel) -> Dict[str, List[int]]:
         points = np.asarray(mesh.points)
         z_coords = points[:, 2]
@@ -94,10 +135,11 @@ class FEBioModelBuilder:
         ET.SubElement(root, "Module", {"type": "solid"})
 
         control = ET.SubElement(root, "Control")
-        ET.SubElement(control, "analysis", {"type": "static"})
+        ET.SubElement(control, "analysis").text = "STATIC"
         ET.SubElement(control, "time_steps").text = str(int(self.config["simulation"].get("time_steps", 10)))
         ET.SubElement(control, "step_size").text = str(float(self.config["simulation"].get("step_size", 0.1)))
         ET.SubElement(control, "plot_level").text = "PLOT_MAJOR_ITRS"
+        solver_type = self._build_solver_tag(control, int(cells.shape[0]))
 
         material_tag = ET.SubElement(root, "Material")
         unique_bins = sorted({int(value) for value in material_bins.tolist()})
@@ -131,8 +173,7 @@ class FEBioModelBuilder:
 
         for set_name, node_ids in node_sets.items():
             set_tag = ET.SubElement(mesh_tag, "NodeSet", {"name": set_name})
-            for node_id in node_ids:
-                ET.SubElement(set_tag, "node", {"id": str(int(node_id))})
+            set_tag.text = ",".join(str(int(node_id)) for node_id in node_ids)
 
         domains_tag = ET.SubElement(root, "MeshDomains")
         for bin_id in unique_bins:
@@ -143,25 +184,28 @@ class FEBioModelBuilder:
             )
 
         boundary = ET.SubElement(root, "Boundary")
-        ET.SubElement(boundary, "fix", {"bc": "x,y,z", "node_set": "distal_nodes"})
+        distal_bc = ET.SubElement(boundary, "bc", {"type": "zero displacement", "node_set": "distal_nodes"})
+        ET.SubElement(distal_bc, "x_dof").text = "1"
+        ET.SubElement(distal_bc, "y_dof").text = "1"
+        ET.SubElement(distal_bc, "z_dof").text = "1"
         if "brace_support_nodes" in node_sets:
-            ET.SubElement(boundary, "fix", {"bc": "x,y", "node_set": "brace_support_nodes"})
+            brace_bc = ET.SubElement(
+                boundary,
+                "bc",
+                {"type": "zero displacement", "node_set": "brace_support_nodes"},
+            )
+            ET.SubElement(brace_bc, "x_dof").text = "1"
+            ET.SubElement(brace_bc, "y_dof").text = "1"
+            ET.SubElement(brace_bc, "z_dof").text = "0"
 
         loads = ET.SubElement(root, "Loads")
         proximal_count = max(1, len(node_sets["proximal_nodes"]))
-        ET.SubElement(loads, "nodal_load", {"bc": "z", "node_set": "proximal_nodes", "lc": "1"}).text = (
-            f"{(-peak_force_n / proximal_count):.6f}"
-        )
-        ET.SubElement(loads, "nodal_load", {"bc": "x", "node_set": "proximal_nodes", "lc": "1"}).text = (
-            f"{(lateral_force_n / proximal_count):.6f}"
-        )
-
-        loaddata = ET.SubElement(root, "LoadData")
-        controller = ET.SubElement(loaddata, "load_controller", {"id": "1", "type": "loadcurve"})
-        ET.SubElement(controller, "interpolate").text = "LINEAR"
-        points_tag = ET.SubElement(controller, "points")
-        ET.SubElement(points_tag, "pt").text = "0,0"
-        ET.SubElement(points_tag, "pt").text = "1,1"
+        axial_load = ET.SubElement(loads, "nodal_load", {"type": "nodal_load", "node_set": "proximal_nodes"})
+        ET.SubElement(axial_load, "dof").text = "z"
+        ET.SubElement(axial_load, "scale").text = f"{(-peak_force_n / proximal_count):.6f}"
+        lateral_load = ET.SubElement(loads, "nodal_load", {"type": "nodal_load", "node_set": "proximal_nodes"})
+        ET.SubElement(lateral_load, "dof").text = "x"
+        ET.SubElement(lateral_load, "scale").text = f"{(lateral_force_n / proximal_count):.6f}"
 
         output = ET.SubElement(root, "Output")
         plotfile = ET.SubElement(output, "plotfile", {"type": "febio"})
@@ -182,6 +226,7 @@ class FEBioModelBuilder:
             "lateral_force_n": lateral_force_n,
             "brace_enabled": brace.enabled,
             "brace_source": brace.source,
+            "febio_solver_type": solver_type,
             "material_table": material_result.materials_table,
         }
         manifest_path = output_dir / "simulation_manifest.json"
@@ -192,6 +237,9 @@ class FEBioModelBuilder:
             manifest_path=manifest_path,
             node_sets=node_sets,
             load_summary=manifest,
-            stats={"element_count": int(cells.shape[0]), "node_count": int(points.shape[0])},
+            stats={
+                "element_count": int(cells.shape[0]),
+                "node_count": int(points.shape[0]),
+                "solver_type": solver_type,
+            },
         )
-
