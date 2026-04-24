@@ -163,12 +163,16 @@ class FEBioModelBuilder:
             ET.SubElement(nodes_tag, "node", {"id": str(node_id)}).text = ",".join(f"{coord:.6f}" for coord in point)
 
         element_counter = 1
+        cell_export_order: List[int] = []
         for bin_id in unique_bins:
             elems_tag = ET.SubElement(mesh_tag, "Elements", {"type": "tet4", "name": f"bone_domain_bin_{bin_id}"})
-            for cell in cells[material_bins == bin_id]:
+            cell_indices = np.flatnonzero(material_bins == bin_id)
+            for cell_index in cell_indices:
+                cell = cells[cell_index]
                 ET.SubElement(elems_tag, "elem", {"id": str(element_counter)}).text = ",".join(
                     str(int(node_index) + 1) for node_index in cell
                 )
+                cell_export_order.append(int(cell_index))
                 element_counter += 1
 
         for set_name, node_ids in node_sets.items():
@@ -208,7 +212,8 @@ class FEBioModelBuilder:
         ET.SubElement(lateral_load, "scale").text = f"{(lateral_force_n / proximal_count):.6f}"
 
         output = ET.SubElement(root, "Output")
-        plotfile = ET.SubElement(output, "plotfile", {"type": "febio"})
+        plotfile_name = "febio_results.vtk"
+        plotfile = ET.SubElement(output, "plotfile", {"type": "vtk", "file": plotfile_name})
         ET.SubElement(plotfile, "var", {"type": "displacement"})
         ET.SubElement(plotfile, "var", {"type": "stress"})
         ET.SubElement(plotfile, "var", {"type": "Lagrange strain"})
@@ -227,6 +232,12 @@ class FEBioModelBuilder:
             "brace_enabled": brace.enabled,
             "brace_source": brace.source,
             "febio_solver_type": solver_type,
+            "febio_plotfile": {
+                "type": "vtk",
+                "file": plotfile_name,
+                "base_name": Path(plotfile_name).stem,
+            },
+            "febio_cell_order": cell_export_order,
             "material_table": material_result.materials_table,
         }
         manifest_path = output_dir / "simulation_manifest.json"
