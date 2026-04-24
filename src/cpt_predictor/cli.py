@@ -411,17 +411,29 @@ def run_streamlit_app() -> None:
     study_metadata = last_run.get("study_metadata", {})
     localization = study_metadata.get("leg_localization", {})
     simulation_mode = str(risk_summary.get("simulation_mode", "unknown"))
-    if simulation_mode == "surrogate":
+    if simulation_mode.startswith("surrogate"):
+        fallback_messages = {
+            "surrogate": "This completed analysis used the built-in surrogate solver rather than FEBio.",
+            "surrogate_febio_failed": "FEBio did not complete successfully, so the run fell back to the built-in surrogate solver.",
+            "surrogate_no_febio": "No FEBio executable was available, so the run used the built-in surrogate solver.",
+            "surrogate_febio_import_failed": "FEBio completed, but its result files could not be imported, so the run fell back to the built-in surrogate solver.",
+        }
         _render_solver_status(
             "warning",
             "Solver used for this run: fallback surrogate",
-            "This completed analysis used the built-in surrogate solver rather than FEBio.",
+            fallback_messages.get(
+                simulation_mode,
+                "This completed analysis used the built-in surrogate solver rather than FEBio.",
+            ),
         )
     elif simulation_mode.startswith("febio"):
+        description = "The completed analysis imported real FEBio-derived stress and strain fields."
+        if simulation_mode != "febio_results_vtk":
+            description = f"The completed analysis reported solver mode {simulation_mode}."
         _render_solver_status(
             "success",
             "Solver used for this run: FEBio",
-            f"The completed analysis reported solver mode {simulation_mode}.",
+            description,
         )
     else:
         _render_solver_status(
