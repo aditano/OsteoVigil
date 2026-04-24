@@ -57,9 +57,9 @@ class RiskAnalyzer:
             "min_safety_factor": float(np.min(safety)) if len(safety) else 0.0,
             "min_fatigue_cycles": float(np.min(cycles)) if len(cycles) else float("inf"),
             "years_to_failure_estimate": years,
-            "fracture_likely_statement": f"Fracture likely in {years:.2f} years under the configured activity assumptions."
+            "fracture_likely_statement": f"Estimated fatigue failure horizon: {years:.2f} years under the configured activity assumptions."
             if np.isfinite(years)
-            else "Fatigue failure was not reached within the configured surrogate model horizon.",
+            else "Fatigue failure was not reached within the configured model horizon.",
             "hotspot_cell_count": hotspot_count,
             "governing_phase": simulation.summary.get("governing_phase", "unknown"),
             "simulation_mode": simulation.mode,
@@ -72,4 +72,3 @@ class RiskAnalyzer:
             encoding="utf-8",
         )
         return RiskAssessment(summary=summary, recommendations=recommendations, summary_path=summary_path)
-
