@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -83,6 +84,10 @@ def test_write_model_emits_febio_v4_control_boundary_and_load_syntax(tmp_path: P
     assert solver.find("qn_method") is not None
     assert root.find("LoadData") is None
 
+    plotfile = root.find("Output/plotfile")
+    assert plotfile is not None
+    assert plotfile.attrib == {"type": "vtk", "file": "febio_results.vtk"}
+
     distal_nodes = root.find("Mesh/NodeSet[@name='distal_nodes']")
     proximal_nodes = root.find("Mesh/NodeSet[@name='proximal_nodes']")
     assert distal_nodes is not None and distal_nodes.text == "1,2,3"
@@ -100,6 +105,10 @@ def test_write_model_emits_febio_v4_control_boundary_and_load_syntax(tmp_path: P
     assert all(load.attrib["type"] == "nodal_load" for load in loads)
     assert [load.findtext("dof") for load in loads] == ["z", "x"]
     assert all(load.find("scale") is not None for load in loads)
+
+    manifest = json.loads(setup.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["febio_plotfile"] == {"type": "vtk", "file": "febio_results.vtk", "base_name": "febio_results"}
+    assert manifest["febio_cell_order"] == [0]
 
 
 def test_write_model_uses_cg_solver_for_large_meshes_or_forced_config(tmp_path: Path) -> None:
