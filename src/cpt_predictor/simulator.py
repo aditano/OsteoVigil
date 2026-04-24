@@ -40,6 +40,183 @@ class FEBioRunner:
             model_arg = feb_path.name if feb_path.parent == output_dir else str(feb_path)
         return [executable, "-i", model_arg]
 
+    @staticmethod
+    def _normalize_data_name(name: str) -> str:
+        return "".join(ch for ch in name.lower() if ch.isalnum())
+
+    def _match_result_array(self, data: Any, candidates: list[str]) -> Optional[np.ndarray]:
+        normalized_lookup = {
+            self._normalize_data_name(str(key)): key
+            for key in getattr(data, "keys", lambda: [])()
+        }
+        for candidate in candidates:
+            key = normalized_lookup.get(self._normalize_data_name(candidate))
+            if key is not None:
+                return np.asarray(data[key], dtype=float)
+        return None
+
+    @staticmethod
+    def _coerce_tensor_array(values: np.ndarray, item_count: int, label: str) -> np.ndarray:
+        array = np.asarray(values, dtype=float)
+        if array.ndim == 3 and array.shape[1:] == (3, 3) and array.shape[0] == item_count:
+            return array
+        if array.ndim == 2 and array.shape == (item_count, 9):
+            return array.reshape((item_count, 3, 3))
+        if array.ndim == 2 and array.shape == (item_count, 6):
+            tensor = np.zeros((item_count, 3, 3), dtype=float)
+            tensor[:, 0, 0] = array[:, 0]
+            tensor[:, 1, 1] = array[:, 1]
+            tensor[:, 2, 2] = array[:, 2]
+            tensor[:, 0, 1] = tensor[:, 1, 0] = array[:, 3]
+            tensor[:, 1, 2] = tensor[:, 2, 1] = array[:, 4]
+            tensor[:, 0, 2] = tensor[:, 2, 0] = array[:, 5]
+            return tensor
+        raise RuntimeError(f"Unexpected FEBio {label} tensor shape: {array.shape}")
+
+    @staticmethod
+    def _von_mises_from_tensors(stress_tensors: np.ndarray) -> np.ndarray:
+        sx = stress_tensors[:, 0, 0]
+        sy = stress_tensors[:, 1, 1]
+        sz = stress_tensors[:, 2, 2]
+        sxy = stress_tensors[:, 0, 1]
+        syz = stress_tensors[:, 1, 2]
+        sxz = stress_tensors[:, 0, 2]
+        return np.sqrt(
+            0.5 * ((sx - sy) ** 2 + (sy - sz) ** 2 + (sz - sx) ** 2)
+            + 3.0 * (sxy**2 + syz**2 + sxz**2)
+        )
+
+    def _find_latest_vtk_result(self, febio_setup: FEBioSetup, output_dir: Path) -> Path:
+        plotfile_info = febio_setup.load_summary.get("febio_plotfile", {})
+        base_name = str(plotfile_info.get("base_name", Path(febio_setup.feb_path).stem)).strip()
+        if not base_name:
+            base_name = Path(febio_setup.feb_path).stem
+
+        indexed_paths = []
+        for path in output_dir.glob(f"{base_name}.*.vtk"):
+            suffix = path.name[len(base_name) + 1 : -4]
+            if suffix.isdigit():
+                indexed_paths.append((int(suffix), path))
+        if indexed_paths:
+            return sorted(indexed_paths, key=lambda item: item[0])[-1][1]
+
+        direct_path = output_dir / f"{base_name}.vtk"
+        if direct_path.exists():
+            return direct_path
+
+        raise FileNotFoundError(f"No FEBio VTK result files matching {base_name} were found in {output_dir}.")
+
+    def _build_febio_result_from_mesh(
+        self,
+        result_mesh: Any,
+        material_result: MaterialResult,
+        febio_setup: FEBioSetup,
+        output_dir: Path,
+        vtk_path: Optional[Path] = None,
+    ) -> SimulationResult:
+        mesh = result_mesh
+
+        displacement = self._match_result_array(mesh.point_data, ["displacement"])
+        if displacement is not None and displacement.shape == (mesh.n_points, 3):
+            mesh.points = np.asarray(mesh.points, dtype=float) + displacement
+
+        source_mesh = material_result.mesh
+        export_order = np.asarray(febio_setup.load_summary.get("febio_cell_order", []), dtype=int)
+        if export_order.size == 0:
+            export_order = np.arange(int(getattr(source_mesh, "n_cells", mesh.n_cells)), dtype=int)
+        if export_order.size != mesh.n_cells:
+            raise RuntimeError(
+                "FEBio result cell count does not match the recorded export order: "
+                f"{mesh.n_cells} vs {export_order.size}."
+            )
+
+        for field_name in ("HU", "density_g_cm3", "youngs_modulus_mpa", "yield_strength_mpa", "material_bin"):
+            source_values = np.asarray(source_mesh.cell_data.get(field_name, []))
+            if source_values.shape[:1] == (export_order.size,):
+                mesh.cell_data[field_name] = source_values[export_order]
+
+        stress_values = self._match_result_array(mesh.cell_data, ["stress", "cauchy_stress"])
+        strain_values = self._match_result_array(mesh.cell_data, ["lagrange_strain", "lagrange strain"])
+        if stress_values is None:
+            raise RuntimeError("FEBio VTK results did not contain a stress tensor field.")
+        if strain_values is None:
+            raise RuntimeError("FEBio VTK results did not contain a Lagrange strain tensor field.")
+
+        stress_tensors = self._coerce_tensor_array(stress_values, mesh.n_cells, "stress")
+        strain_tensors = self._coerce_tensor_array(strain_values, mesh.n_cells, "Lagrange strain")
+        strain_tensors = 0.5 * (strain_tensors + np.swapaxes(strain_tensors, 1, 2))
+
+        von_mises = self._von_mises_from_tensors(stress_tensors)
+        principal_strain = np.max(np.linalg.eigvalsh(strain_tensors), axis=1)
+
+        strength = np.asarray(mesh.cell_data.get("yield_strength_mpa", np.full(mesh.n_cells, np.nan)), dtype=float)
+        if strength.shape != (mesh.n_cells,):
+            strength = np.full(mesh.n_cells, np.nan, dtype=float)
+
+        stress_floor = np.maximum(von_mises, 0.1)
+        safety_factor = np.divide(
+            strength,
+            stress_floor,
+            out=np.full(mesh.n_cells, np.inf, dtype=float),
+            where=np.isfinite(strength),
+        )
+
+        fatigue_constant = float(self.config["simulation"].get("fatigue_constant", 500000.0))
+        fatigue_exponent = float(self.config["simulation"].get("fatigue_exponent", 7.5))
+        fatigue_ratio = np.divide(
+            strength,
+            stress_floor,
+            out=np.full(mesh.n_cells, np.inf, dtype=float),
+            where=np.isfinite(strength),
+        )
+        fatigue_cycles = fatigue_constant * np.power(np.maximum(fatigue_ratio, 0.1), fatigue_exponent)
+        fatigue_cycles[~np.isfinite(fatigue_cycles)] = np.inf
+
+        mesh.cell_data["von_mises_mpa"] = von_mises
+        mesh.cell_data["principal_strain"] = principal_strain
+        mesh.cell_data["safety_factor"] = safety_factor
+        mesh.cell_data["fatigue_cycles"] = fatigue_cycles
+
+        mesh_path = output_dir / "simulation_mesh.vtu"
+        mesh.save(mesh_path)
+
+        steps_per_day = max(1.0, float(self.config["patient"].get("steps_per_day", 6000)))
+        min_cycles = float(np.min(fatigue_cycles)) if fatigue_cycles.size else float("inf")
+        years_to_failure = float(min_cycles / (steps_per_day * 365.0)) if np.isfinite(min_cycles) else float("inf")
+        peak_phase = febio_setup.load_summary.get("peak_phase", {})
+        summary = {
+            "mode": "febio_results_vtk",
+            "max_von_mises_mpa": float(np.max(von_mises)) if von_mises.size else 0.0,
+            "min_safety_factor": float(np.min(safety_factor)) if safety_factor.size else float("inf"),
+            "min_fatigue_cycles": min_cycles,
+            "years_to_failure_estimate": max(0.0, years_to_failure) if np.isfinite(years_to_failure) else float("inf"),
+            "governing_phase": str(peak_phase.get("name", "peak_load_case")),
+            "result_mesh_source": "febio_vtk",
+            "vtk_result_path": str(vtk_path) if vtk_path else "",
+        }
+
+        summary_path = output_dir / "simulation_summary.json"
+        summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        return SimulationResult(
+            mode="febio_results_vtk",
+            mesh=mesh,
+            mesh_path=mesh_path,
+            summary=summary,
+            log_path=summary_path,
+        )
+
+    def _load_febio_results(
+        self,
+        febio_setup: FEBioSetup,
+        material_result: MaterialResult,
+        output_dir: Path,
+    ) -> SimulationResult:
+        import pyvista as pv
+
+        vtk_path = self._find_latest_vtk_result(febio_setup, output_dir)
+        vtk_mesh = pv.read(vtk_path)
+        return self._build_febio_result_from_mesh(vtk_mesh, material_result, febio_setup, output_dir, vtk_path=vtk_path)
+
     def _slice_area_profile(self, segmentation: SegmentationResult, study: StudyData) -> np.ndarray:
         return segmentation.mask.sum(axis=(1, 2)).astype(float) * study.spacing_zyx[1] * study.spacing_zyx[2]
 
@@ -189,23 +366,53 @@ class FEBioRunner:
                 encoding="utf-8",
             )
             if completed.returncode == 0:
-                surrogate_result = self._run_surrogate(study, segmentation, material_result, brace, output_dir)
-                summary = dict(surrogate_result.summary)
-                summary.update(
+                try:
+                    febio_result = self._load_febio_results(febio_setup, material_result, output_dir)
+                except Exception as exc:
+                    if not allow_surrogate_fallback:
+                        raise RuntimeError(
+                            "FEBio completed, but its result files could not be imported. See "
+                            f"{log_path}"
+                            " for execution details."
+                        ) from exc
+
+                    surrogate_result = self._run_surrogate(study, segmentation, material_result, brace, output_dir)
+                    summary = dict(surrogate_result.summary)
+                    summary.update(
+                        {
+                            "mode": "surrogate_febio_import_failed",
+                            "febio_return_code": int(completed.returncode),
+                            "febio_command": command,
+                            "febio_log_path": str(log_path),
+                            "febio_import_error": str(exc),
+                        }
+                    )
+                    (output_dir / "simulation_summary.json").write_text(
+                        json.dumps(summary, indent=2),
+                        encoding="utf-8",
+                    )
+                    return SimulationResult(
+                        mode="surrogate_febio_import_failed",
+                        mesh=surrogate_result.mesh,
+                        mesh_path=surrogate_result.mesh_path,
+                        summary=summary,
+                        log_path=log_path,
+                        raw_stdout=completed.stdout,
+                    )
+
+                febio_result.summary.update(
                     {
-                        "mode": "febio_completed_surrogate_postprocess",
+                        "mode": "febio_results_vtk",
                         "febio_return_code": int(completed.returncode),
                         "febio_command": command,
+                        "febio_log_path": str(log_path),
                     }
                 )
-                return SimulationResult(
-                    mode="febio_completed_surrogate_postprocess",
-                    mesh=surrogate_result.mesh,
-                    mesh_path=surrogate_result.mesh_path,
-                    summary=summary,
-                    log_path=log_path,
-                    raw_stdout=completed.stdout,
-                )
+                summary_path = output_dir / "simulation_summary.json"
+                summary_path.write_text(json.dumps(febio_result.summary, indent=2), encoding="utf-8")
+                febio_result.log_path = log_path
+                febio_result.raw_stdout = completed.stdout
+                return febio_result
 
             if not allow_surrogate_fallback:
                 raise RuntimeError(
@@ -224,6 +431,7 @@ class FEBioRunner:
                     "febio_log_path": str(log_path),
                 }
             )
+            (output_dir / "simulation_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
             return SimulationResult(
                 mode="surrogate_febio_failed",
                 mesh=surrogate_result.mesh,
@@ -240,6 +448,7 @@ class FEBioRunner:
         if bool(self.config["simulation"].get("prefer_febio", True)) and not executable:
             summary = dict(surrogate_result.summary)
             summary.update({"mode": "surrogate_no_febio"})
+            (output_dir / "simulation_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
             return SimulationResult(
                 mode="surrogate_no_febio",
                 mesh=surrogate_result.mesh,
