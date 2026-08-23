@@ -187,6 +187,8 @@ class ResultVisualizer:
             float(origin[2]),
             float(origin[2] + shape[0] * spacing[0]),
         )
+        ap, ap_hu, ap_extent = self._crop_projection_to_bone(ap, ap_hu, ap_extent)
+        lateral, lat_hu, lat_extent = self._crop_projection_to_bone(lateral, lat_hu, lat_extent)
         return {
             "ap": ap,
             "lateral": lateral,
@@ -195,6 +197,50 @@ class ResultVisualizer:
             "ap_extent": np.asarray(ap_extent, dtype=float),
             "lateral_extent": np.asarray(lat_extent, dtype=float),
         }
+
+    @staticmethod
+    def _crop_projection_to_bone(
+        image: np.ndarray,
+        hu: np.ndarray,
+        extent,
+        pad_frac: float = 0.08,
+    ) -> Tuple[np.ndarray, np.ndarray, Tuple[float, float, float, float]]:
+        """Zoom a MIP to the bone silhouette so leftover CT air does not shrink the view."""
+        silhouette = np.isfinite(hu) | np.isfinite(image)
+        if not silhouette.any():
+            return image, hu, tuple(float(v) for v in extent)
+        rows = np.where(silhouette.any(axis=1))[0]
+        cols = np.where(silhouette.any(axis=0))[0]
+        r0, r1 = int(rows[0]), int(rows[-1]) + 1
+        c0, c1 = int(cols[0]), int(cols[-1]) + 1
+        pad_r = max(1, int(np.ceil(pad_frac * (r1 - r0))))
+        pad_c = max(1, int(np.ceil(pad_frac * (c1 - c0))))
+        r0 = max(0, r0 - pad_r)
+        r1 = min(image.shape[0], r1 + pad_r)
+        c0 = max(0, c0 - pad_c)
+        c1 = min(image.shape[1], c1 + pad_c)
+        h0, h1, v0, v1 = (float(v) for v in extent)
+        n_h = max(image.shape[1], 1)
+        n_v = max(image.shape[0], 1)
+        cropped_extent = (
+            h0 + (h1 - h0) * (c0 / n_h),
+            h0 + (h1 - h0) * (c1 / n_h),
+            v0 + (v1 - v0) * (r0 / n_v),
+            v0 + (v1 - v0) * (r1 / n_v),
+        )
+        return image[r0:r1, c0:c1], hu[r0:r1, c0:c1], cropped_extent
+
+    @staticmethod
+    def _heatmap_figsize(ap_extent, lat_extent) -> Tuple[float, float]:
+        ap_w = abs(float(ap_extent[1]) - float(ap_extent[0]))
+        ap_h = abs(float(ap_extent[3]) - float(ap_extent[2]))
+        lat_w = abs(float(lat_extent[1]) - float(lat_extent[0]))
+        lat_h = abs(float(lat_extent[3]) - float(lat_extent[2]))
+        data_w = max(ap_w + lat_w, 1.0)
+        data_h = max(ap_h, lat_h, 1.0)
+        fig_w = 10.4
+        fig_h = fig_w * (data_h / data_w) * 0.95
+        return fig_w, float(np.clip(fig_h, 6.8, 16.0))
 
     def _mip_from_points(self, centers: np.ndarray, stress: np.ndarray, bins: int = 220) -> Dict[str, np.ndarray]:
         def _project(horizontal: np.ndarray, vertical: np.ndarray) -> Tuple[np.ndarray, Tuple[float, float, float, float]]:
@@ -315,6 +361,8 @@ class ResultVisualizer:
         ax.tick_params(colors="white")
         for spine in ax.spines.values():
             spine.set_color("#8a8f98")
+        ax.set_xlim(float(extent[0]), float(extent[1]))
+        ax.set_ylim(float(extent[2]), float(extent[3]))
         ax.set_aspect("equal", adjustable="box")
         return mapped
 
@@ -375,7 +423,12 @@ class ResultVisualizer:
         hotspot_util = float(utilization[hotspot_index]) if np.isfinite(utilization[hotspot_index]) else float("nan")
         weakest_util = float(utilization[weakest_index]) if np.isfinite(utilization[weakest_index]) else float("nan")
 
-        fig, axes = plt.subplots(1, 2, figsize=(9.2, 10.5), facecolor="#111318")
+        fig, axes = plt.subplots(
+            1,
+            2,
+            figsize=self._heatmap_figsize(views["ap_extent"], views["lateral_extent"]),
+            facecolor="#111318",
+        )
         image = None
         specs = (
             (axes[0], views["ap"], views["ap_hu"], views["ap_extent"], "AP view", "Medial–lateral (mm)", 0),

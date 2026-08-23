@@ -42,8 +42,8 @@ def test_ap_lateral_views_follow_bone_silhouette_not_a_filled_rectangle():
 
     ap_finite = np.isfinite(ap)
     lat_finite = np.isfinite(lat)
-    assert 0.05 < ap_finite.mean() < 0.75
-    assert 0.05 < lat_finite.mean() < 0.75
+    assert 0.05 < ap_finite.mean() < 0.92
+    assert 0.05 < lat_finite.mean() < 0.92
     # Corners of the bounding box are empty space, not interpolated stress.
     assert not ap_finite[0, 0]
     assert not ap_finite[0, -1]
@@ -57,6 +57,23 @@ def test_ap_lateral_views_follow_bone_silhouette_not_a_filled_rectangle():
     pz, px = np.unravel_index(peak, ap.shape)
     assert ap_finite[pz, px]
     assert 0.25 * ap.shape[0] < pz < 0.75 * ap.shape[0]
+
+
+def test_volume_mip_zooms_extent_to_bone_not_full_ct_frame():
+    visualizer = ResultVisualizer({})
+    study, segmentation, centers, stress = _cylinder_case(shape=(64, 80, 90), radius=7.0)
+    views = visualizer.project_bone_stress_views(centers, stress, study=study, segmentation=segmentation)
+    ap_w = float(views["ap_extent"][1] - views["ap_extent"][0])
+    ap_h = float(views["ap_extent"][3] - views["ap_extent"][2])
+    lat_w = float(views["lateral_extent"][1] - views["lateral_extent"][0])
+    # Full CT frame is 90 x 80 mm; the cylinder is ~14 mm across and ~56 mm tall.
+    assert ap_w < 30.0
+    assert lat_w < 30.0
+    assert ap_h > 40.0
+    assert ap_w < 0.45 * 90.0
+    fig_w, fig_h = visualizer._heatmap_figsize(views["ap_extent"], views["lateral_extent"])
+    assert fig_w > 8.0
+    assert fig_h >= 6.8
 
 
 def test_interior_extrema_ignore_boundary_condition_bands():
