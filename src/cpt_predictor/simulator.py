@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
+from .fem_solver import solve_mesh_linear_tet_fea
 from .models import BraceModel, FEBioSetup, MaterialResult, MeshResult, SegmentationResult, SimulationResult, StudyData
 from .segmentation import locate_pseudarthrosis_slice
 from .utils.febio_manager import resolve_managed_febio_executable
@@ -218,145 +219,98 @@ class FEBioRunner:
         vtk_mesh = pv.read(vtk_path)
         return self._build_febio_result_from_mesh(vtk_mesh, material_result, febio_setup, output_dir, vtk_path=vtk_path)
 
-    def _slice_area_profile(self, segmentation: SegmentationResult, study: StudyData) -> np.ndarray:
-        return segmentation.mask.sum(axis=(1, 2)).astype(float) * study.spacing_zyx[1] * study.spacing_zyx[2]
+    def _attach_derived_fields(self, mesh: Any, von_mises: np.ndarray, principal_strain: np.ndarray) -> Dict[str, Any]:
+        n_cells = int(getattr(mesh, "n_cells", von_mises.size))
+        strength = np.asarray(mesh.cell_data.get("yield_strength_mpa", np.full(n_cells, np.nan)), dtype=float)
+        if strength.shape != (n_cells,):
+            strength = np.full(n_cells, np.nan, dtype=float)
 
-    def _stabilize_area_profile(self, slice_area: np.ndarray) -> tuple[np.ndarray, int, float]:
-        nonzero = np.where(slice_area > 1e-3)[0]
-        if nonzero.size == 0:
-            return np.full_like(slice_area, 100.0), 0, 100.0
+        stress_floor = np.maximum(np.asarray(von_mises, dtype=float), 0.1)
+        safety_factor = np.divide(
+            strength,
+            stress_floor,
+            out=np.full(n_cells, np.inf, dtype=float),
+            where=np.isfinite(strength),
+        )
+        fatigue_constant = float(self.config["simulation"].get("fatigue_constant", 500000.0))
+        fatigue_exponent = float(self.config["simulation"].get("fatigue_exponent", 7.5))
+        fatigue_ratio = np.divide(
+            strength,
+            stress_floor,
+            out=np.full(n_cells, np.inf, dtype=float),
+            where=np.isfinite(strength),
+        )
+        fatigue_cycles = fatigue_constant * np.power(np.maximum(fatigue_ratio, 0.1), fatigue_exponent)
+        fatigue_cycles[~np.isfinite(fatigue_cycles)] = np.inf
 
-        z0 = int(nonzero[0])
-        z1 = int(nonzero[-1]) + 1
-        length = z1 - z0
-        margin = max(2, int(0.12 * length)) if length >= 16 else 0
-        interior_z0 = z0 + margin
-        interior_z1 = max(interior_z0 + 1, z1 - margin)
-        interior = slice_area[interior_z0:interior_z1]
-        if interior.size == 0:
-            interior = slice_area[nonzero]
-            interior_z0, interior_z1 = z0, z1
+        mesh.cell_data["von_mises_mpa"] = np.asarray(von_mises, dtype=float)
+        mesh.cell_data["principal_strain"] = np.asarray(principal_strain, dtype=float)
+        mesh.cell_data["safety_factor"] = safety_factor
+        mesh.cell_data["fatigue_cycles"] = fatigue_cycles
 
-        floor_area = max(1.0, float(np.percentile(interior, 15)))
-        area_profile = np.array(slice_area, dtype=float)
-        area_profile[:interior_z0] = max(float(interior[0]), floor_area)
-        area_profile[interior_z1:] = max(float(interior[-1]), floor_area)
-        area_profile = np.maximum(area_profile, floor_area)
-        defect_slice = int(interior_z0 + int(np.argmin(interior))) if interior.size else int(nonzero[0])
-        return area_profile, defect_slice, floor_area
+        steps_per_day = max(1.0, float(self.config["patient"].get("steps_per_day", 6000)))
+        min_cycles = float(np.min(fatigue_cycles)) if fatigue_cycles.size else float("inf")
+        years_to_failure = float(min_cycles / (steps_per_day * 365.0)) if np.isfinite(min_cycles) else float("inf")
+        return {
+            "max_von_mises_mpa": float(np.max(von_mises)) if von_mises.size else 0.0,
+            "min_safety_factor": float(np.min(safety_factor)) if safety_factor.size else float("inf"),
+            "min_fatigue_cycles": min_cycles,
+            "years_to_failure_estimate": max(0.0, years_to_failure) if np.isfinite(years_to_failure) else float("inf"),
+        }
 
-    def _run_surrogate(
+    def _run_linear_tet_fea(
         self,
         study: StudyData,
         segmentation: SegmentationResult,
         material_result: MaterialResult,
         brace: BraceModel,
+        febio_setup: FEBioSetup,
         output_dir: Path,
+        mode: str = "linear_tet_fea",
     ) -> SimulationResult:
         mesh = material_result.mesh.copy(deep=True)
-        centers = np.asarray(mesh.cell_centers().points)
-        modulus = np.asarray(mesh.cell_data["youngs_modulus_mpa"], dtype=float)
-        strength = np.asarray(mesh.cell_data["yield_strength_mpa"], dtype=float)
-
-        slice_area = self._slice_area_profile(segmentation, study)
-        area_profile, area_defect_slice, _floor_area = self._stabilize_area_profile(slice_area)
-        defect_slice = locate_pseudarthrosis_slice(segmentation.mask, study.hu_volume)
-        if defect_slice < 0 or defect_slice >= slice_area.shape[0]:
-            defect_slice = area_defect_slice
-
-        defect_z = study.origin_xyz[2] + defect_slice * study.spacing_zyx[0]
-        z_positions = study.origin_xyz[2] + np.arange(study.hu_volume.shape[0]) * study.spacing_zyx[0]
-        radius_profile = np.sqrt(area_profile / np.pi)
-
-        x_center = 0.5 * (float(mesh.bounds[0]) + float(mesh.bounds[1]))
-        y_center = 0.5 * (float(mesh.bounds[2]) + float(mesh.bounds[3]))
-        radial_distance = np.sqrt((centers[:, 0] - x_center) ** 2 + (centers[:, 1] - y_center) ** 2) + 1e-3
-
-        body_mass = float(self.config["patient"]["body_mass_kg"])
-        fatigue_constant = float(self.config["simulation"].get("fatigue_constant", 500000.0))
-        fatigue_exponent = float(self.config["simulation"].get("fatigue_exponent", 7.5))
-        brace_factor = float(brace.metadata.get("stress_reduction_factor", 0.72)) if brace.enabled else 1.0
-
-        phase_names = []
-        phase_stresses = []
-        phase_strains = []
-        phase_cycles = []
-
-        local_area = np.interp(centers[:, 2], z_positions, area_profile)
-        local_radius = np.interp(centers[:, 2], z_positions, radius_profile)
-        section_modulus = np.maximum(np.pi * np.power(local_radius, 3) / 4.0, 1.0)
-        polar_moment = np.maximum(np.pi * np.power(local_radius, 4) / 2.0, 1.0)
-
-        brace_mask = np.ones(mesh.n_cells, dtype=float)
-        if brace.enabled and brace.support_bounds_xyz:
-            x0, x1, y0, y1, z0, z1 = brace.support_bounds_xyz
-            in_brace = (
-                (centers[:, 0] >= x0)
-                & (centers[:, 0] <= x1)
-                & (centers[:, 1] >= y0)
-                & (centers[:, 1] <= y1)
-                & (centers[:, 2] >= z0)
-                & (centers[:, 2] <= z1)
-            )
-            brace_mask[in_brace] = brace_factor
-
-        defect_sigma = max(study.spacing_zyx[0] * 3.0, 6.0)
-        defect_factor = 1.0 + 1.6 * np.exp(-np.square(centers[:, 2] - defect_z) / (2.0 * defect_sigma**2))
-
-        for phase in self.config["loads"]["gait_phases"]:
-            phase_names.append(phase["name"])
-            axial_force = body_mass * 9.81 * float(phase["axial_bodyweight_multiplier"])
-            bending_moment = float(phase["bending_moment_nm"]) * 1000.0
-            torsion = float(phase["torsion_nm"]) * 1000.0
-
-            sigma_axial = axial_force / np.maximum(local_area, 1.0)
-            sigma_bending = (bending_moment * radial_distance) / section_modulus
-            tau_torsion = (torsion * radial_distance) / polar_moment
-            stress = np.sqrt(np.square(sigma_axial + sigma_bending) + (3.0 * np.square(tau_torsion)))
-            stress = stress * defect_factor * brace_mask
-
-            strain = stress / np.maximum(modulus, 100.0)
-            cycles = fatigue_constant * np.power(np.maximum(strength / np.maximum(stress, 0.1), 0.1), fatigue_exponent)
-
-            phase_stresses.append(stress)
-            phase_strains.append(strain)
-            phase_cycles.append(cycles)
-
-        stacked_stress = np.vstack(phase_stresses)
-        stacked_strain = np.vstack(phase_strains)
-        stacked_cycles = np.vstack(phase_cycles)
-        governing_index = np.argmax(stacked_stress, axis=0)
-        cell_ids = np.arange(mesh.n_cells)
-
-        von_mises = stacked_stress[governing_index, cell_ids]
-        max_principal_strain = stacked_strain[governing_index, cell_ids]
-        fatigue_cycles = stacked_cycles[governing_index, cell_ids]
-        safety_factor = strength / np.maximum(von_mises, 0.1)
-
-        mesh.cell_data["von_mises_mpa"] = von_mises
-        mesh.cell_data["principal_strain"] = max_principal_strain
-        mesh.cell_data["safety_factor"] = safety_factor
-        mesh.cell_data["fatigue_cycles"] = fatigue_cycles
-        mesh.cell_data["governing_phase_index"] = governing_index.astype(int)
+        fea = solve_mesh_linear_tet_fea(mesh, febio_setup, self.config)
+        mesh.point_data["displacement"] = fea.displacement
+        derived = self._attach_derived_fields(mesh, fea.von_mises, fea.principal_strain)
 
         mesh_path = output_dir / "simulation_mesh.vtu"
         mesh.save(mesh_path)
 
-        steps_per_day = max(1.0, float(self.config["patient"].get("steps_per_day", 6000)))
-        years_to_failure = float(np.min(fatigue_cycles) / (steps_per_day * 365.0))
+        peak_phase = febio_setup.load_summary.get("peak_phase", {}) if febio_setup.load_summary else {}
         summary = {
-            "mode": "surrogate",
-            "max_von_mises_mpa": float(np.max(von_mises)),
-            "min_safety_factor": float(np.min(safety_factor)),
-            "min_fatigue_cycles": float(np.min(fatigue_cycles)),
-            "years_to_failure_estimate": max(0.0, years_to_failure),
-            "defect_slice_index": defect_slice,
-            "governing_phase": phase_names[int(np.argmax([np.max(v) for v in phase_stresses]))],
+            "mode": mode,
+            **derived,
+            "governing_phase": str(peak_phase.get("name", "peak_load_case")),
+            "engine": "linear_tetrahedron_fea",
+            "fea_solver": fea.solver,
+            "fea_residual_norm": float(fea.residual_norm),
+            "fea_iterations": int(fea.iterations),
+            "brace_enabled": bool(getattr(brace, "enabled", False)),
         }
+        if study is not None and segmentation is not None:
+            summary["defect_slice_index"] = int(
+                locate_pseudarthrosis_slice(segmentation.mask, study.hu_volume)
+            )
+        summary.update(fea.stats)
 
         summary_path = output_dir / "simulation_summary.json"
         summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-        return SimulationResult(mode="surrogate", mesh=mesh, mesh_path=mesh_path, summary=summary, log_path=summary_path)
+        return SimulationResult(
+            mode=mode,
+            mesh=mesh,
+            mesh_path=mesh_path,
+            summary=summary,
+            log_path=summary_path,
+        )
+
+    def _allow_internal_fea(self) -> bool:
+        sim_cfg = self.config.get("simulation", {})
+        if "internal_fea_if_febio_unavailable" in sim_cfg:
+            return bool(sim_cfg.get("internal_fea_if_febio_unavailable"))
+        # Legacy key: a false value used to disable any non-FEBio path.
+        if "surrogate_if_febio_unavailable" in sim_cfg:
+            return bool(sim_cfg.get("surrogate_if_febio_unavailable"))
+        return True
 
     def run(
         self,
@@ -369,7 +323,7 @@ class FEBioRunner:
     ) -> SimulationResult:
         output_dir.mkdir(parents=True, exist_ok=True)
         executable = self._resolve_febio_executable()
-        allow_surrogate_fallback = bool(self.config["simulation"].get("surrogate_if_febio_unavailable", True))
+        allow_internal_fea = self._allow_internal_fea()
         should_try_febio = bool(self.config["simulation"].get("prefer_febio", True)) and executable
 
         if should_try_febio:
@@ -390,18 +344,24 @@ class FEBioRunner:
                 try:
                     febio_result = self._load_febio_results(febio_setup, material_result, output_dir)
                 except Exception as exc:
-                    if not allow_surrogate_fallback:
+                    if not allow_internal_fea:
                         raise RuntimeError(
                             "FEBio completed, but its result files could not be imported. See "
-                            f"{log_path}"
-                            " for execution details."
+                            f"{log_path} for execution details."
                         ) from exc
-
-                    surrogate_result = self._run_surrogate(study, segmentation, material_result, brace, output_dir)
-                    summary = dict(surrogate_result.summary)
+                    fea_result = self._run_linear_tet_fea(
+                        study,
+                        segmentation,
+                        material_result,
+                        brace,
+                        febio_setup,
+                        output_dir,
+                        mode="linear_tet_fea_after_febio_import_failure",
+                    )
+                    summary = dict(fea_result.summary)
                     summary.update(
                         {
-                            "mode": "surrogate_febio_import_failed",
+                            "mode": "linear_tet_fea_after_febio_import_failure",
                             "febio_return_code": int(completed.returncode),
                             "febio_command": command,
                             "febio_log_path": str(log_path),
@@ -409,73 +369,64 @@ class FEBioRunner:
                         }
                     )
                     (output_dir / "simulation_summary.json").write_text(
-                        json.dumps(summary, indent=2),
-                        encoding="utf-8",
+                        json.dumps(summary, indent=2), encoding="utf-8"
                     )
-                    return SimulationResult(
-                        mode="surrogate_febio_import_failed",
-                        mesh=surrogate_result.mesh,
-                        mesh_path=surrogate_result.mesh_path,
-                        summary=summary,
-                        log_path=log_path,
-                        raw_stdout=completed.stdout,
-                    )
+                    fea_result.mode = "linear_tet_fea_after_febio_import_failure"
+                    fea_result.summary = summary
+                    fea_result.log_path = log_path
+                    fea_result.raw_stdout = completed.stdout
+                    return fea_result
 
                 febio_result.summary.update(
                     {
                         "mode": "febio_results_vtk",
+                        "engine": "febio",
                         "febio_return_code": int(completed.returncode),
                         "febio_command": command,
                         "febio_log_path": str(log_path),
                     }
                 )
-                summary_path = output_dir / "simulation_summary.json"
-                summary_path.write_text(json.dumps(febio_result.summary, indent=2), encoding="utf-8")
+                (output_dir / "simulation_summary.json").write_text(
+                    json.dumps(febio_result.summary, indent=2), encoding="utf-8"
+                )
                 febio_result.log_path = log_path
                 febio_result.raw_stdout = completed.stdout
                 return febio_result
 
-            if not allow_surrogate_fallback:
-                raise RuntimeError(
-                    "FEBio execution failed. See "
-                    f"{log_path}"
-                    " for details."
-                )
+            if not allow_internal_fea:
+                raise RuntimeError(f"FEBio execution failed. See {log_path} for details.")
 
-            surrogate_result = self._run_surrogate(study, segmentation, material_result, brace, output_dir)
-            summary = dict(surrogate_result.summary)
+            fea_result = self._run_linear_tet_fea(
+                study,
+                segmentation,
+                material_result,
+                brace,
+                febio_setup,
+                output_dir,
+                mode="linear_tet_fea_after_febio_failure",
+            )
+            summary = dict(fea_result.summary)
             summary.update(
                 {
-                    "mode": "surrogate_febio_failed",
+                    "mode": "linear_tet_fea_after_febio_failure",
                     "febio_return_code": int(completed.returncode),
                     "febio_command": command,
                     "febio_log_path": str(log_path),
                 }
             )
-            (output_dir / "simulation_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-            return SimulationResult(
-                mode="surrogate_febio_failed",
-                mesh=surrogate_result.mesh,
-                mesh_path=surrogate_result.mesh_path,
-                summary=summary,
-                log_path=log_path,
-                raw_stdout=completed.stdout,
+            (output_dir / "simulation_summary.json").write_text(
+                json.dumps(summary, indent=2), encoding="utf-8"
             )
+            fea_result.mode = "linear_tet_fea_after_febio_failure"
+            fea_result.summary = summary
+            fea_result.log_path = log_path
+            fea_result.raw_stdout = completed.stdout
+            return fea_result
 
-        elif bool(self.config["simulation"].get("prefer_febio", True)) and not allow_surrogate_fallback:
+        if bool(self.config["simulation"].get("prefer_febio", True)) and not allow_internal_fea:
             raise RuntimeError("FEBio was requested, but no FEBio executable was found.")
 
-        surrogate_result = self._run_surrogate(study, segmentation, material_result, brace, output_dir)
-        if bool(self.config["simulation"].get("prefer_febio", True)) and not executable:
-            summary = dict(surrogate_result.summary)
-            summary.update({"mode": "surrogate_no_febio"})
-            (output_dir / "simulation_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-            return SimulationResult(
-                mode="surrogate_no_febio",
-                mesh=surrogate_result.mesh,
-                mesh_path=surrogate_result.mesh_path,
-                summary=summary,
-                log_path=surrogate_result.log_path,
-                raw_stdout=surrogate_result.raw_stdout,
-            )
-        return surrogate_result
+        return self._run_linear_tet_fea(
+            study, segmentation, material_result, brace, febio_setup, output_dir, mode="linear_tet_fea"
+        )
+

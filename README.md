@@ -1,6 +1,6 @@
 # === CPT FRACTURE PREDICTION SYSTEM - FULL PROJECT OUTLINE ===
 
-`OsteoVigil` is an open-source Python application for lower-leg CT loading, tibial segmentation, tetrahedral mesh generation, density-to-material mapping, FEBio model export, surrogate-or-FEBio simulation, fracture-risk analysis, and clinician-friendly reporting for congenital pseudarthrosis of the tibia (CPT) in a brace-assisted patient workflow.
+`OsteoVigil` is an open-source Python application for lower-leg CT loading, tibial segmentation, tetrahedral mesh generation, density-to-material mapping, FEBio model export, FEBio-or-linear-tetrahedral-FEA simulation, fracture-risk analysis, and clinician-friendly reporting for congenital pseudarthrosis of the tibia (CPT) in a brace-assisted patient workflow.
 
 The app now supports both dedicated tibia/fibula scans and larger bilateral or full-body CT studies. When both legs are present, the preprocessing stage can detect that, let the user choose a target leg, and crop the study down to the tib/fib region before the usual analysis pipeline continues.
 
@@ -25,7 +25,7 @@ flowchart TD
     F --> G
     G --> H{"FEBio installed?"}
     H -->|Yes| I["SimulatorAgent<br/>run FEBio subprocess"]
-    H -->|No| J["SimulatorAgent<br/>surrogate nonlinear stress estimator"]
+    H -->|No| J["SimulatorAgent<br/>linear tetrahedral FEA"]
     I --> K["AnalyzerAgent<br/>risk + fatigue + safety factor"]
     J --> K
     K --> L["VisualizerAgent<br/>PyVista + Matplotlib"]
@@ -123,7 +123,7 @@ All tooling is free/open-source.
 5. Sample HU values at cell centers and convert them to density, Young's modulus, and yield strength using Bonemat-style heuristic equations.
 6. Load an AFO STL or create a simplified brace envelope from the tibial bounding box.
 7. Export a FEBio `.feb` model with bone domains, quantized material bins, fixed distal boundary conditions, proximal gait loads, and a simplified brace-support proxy.
-8. Run FEBio if installed; otherwise run the bundled surrogate structural solver so the workflow remains runnable without proprietary or missing binaries.
+8. Run FEBio if installed; otherwise solve a linear-elastic tetrahedral finite-element model of the bone mesh. There is no beam-theory surrogate path.
 9. Compute von Mises stress, strain, safety factor, fatigue-cycle estimate, hotspot regions, and a years-to-failure estimate from daily step counts.
 10. Save a PyVista mesh with scalar fields, PNG/HTML visualizations, a PDF report, and summary JSON.
 
@@ -132,7 +132,7 @@ All tooling is free/open-source.
 - This repository is designed as a transparent research/engineering starter kit, not a validated medical device.
 - The default segmentation is classical and robust enough for many CT studies, but not equivalent to a clinically validated nnU-Net or MONAI bundle.
 - The bundled FEBio writer uses quantized material bins plus a brace-support proxy to keep the model reproducible and open-source; advanced shell contact tuning still benefits from expert FEBio calibration.
-- If FEBio is unavailable, the code falls back to a documented surrogate stress model. That keeps the application runnable, but it is not a substitute for a full nonlinear contact solve.
+- If FEBio is unavailable, the code runs a linear tetrahedral FEA solver on the same mesh, materials, and gait loads. That is still a continuum finite-element analysis, not a beam-theory surrogate, and it is not a substitute for a full nonlinear FEBio contact solve.
 - Fatigue-life estimation uses a simple phenomenological damage law and should be treated as scenario analysis, not a forecast guarantee.
 - Lower-leg muscle, ligament, and joint reaction forces are simplified into gait-phase load multipliers unless the user customizes them.
 
@@ -189,7 +189,7 @@ pip install -r requirements.txt
 python install_febio.py
 ```
 
-This installer attempts a repo-local FEBio install under `.third_party/febio/` by first checking the latest official `febiosoftware/FEBio` GitHub release assets and then falling back to an automatic source build. If the managed FEBio install is unavailable, the app still runs with its documented surrogate solver.
+This installer attempts a repo-local FEBio install under `.third_party/febio/` by first checking the latest official `febiosoftware/FEBio` GitHub release assets and then falling back to an automatic source build. If the managed FEBio install is unavailable, the app still runs a built-in linear tetrahedral FEA solver.
 
 ## How To Run
 

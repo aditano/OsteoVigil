@@ -49,12 +49,12 @@ def _solver_availability_status(explicit_path: Optional[str] = None) -> tuple[st
         return (
             "success",
             "Solver availability: FEBio detected",
-            f"FEBio executable found at {detected}. The completed-run banner below will confirm whether FEBio or the fallback was actually used.",
+            f"FEBio executable found at {detected}. The completed-run banner below will confirm whether FEBio or the built-in linear tetrahedral FEA solver was used.",
         )
     return (
-        "warning",
-        "Solver availability: fallback surrogate only",
-        "No FEBio executable was detected for this session, so the built-in surrogate solver will be used.",
+        "info",
+        "Solver availability: built-in linear tetrahedral FEA",
+        "No FEBio executable was detected. This session will run a linear-elastic tetrahedral finite-element analysis on the bone mesh (not a beam-theory surrogate).",
     )
 
 
@@ -67,7 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dummy-data", action="store_true", help="Use synthetic demo data if DICOM is unavailable.")
     parser.add_argument("--use-agents", action="store_true", help="Run via the named multi-agent orchestrator.")
     parser.add_argument("--human-in-the-loop", action="store_true", help="Prompt before export and simulation.")
-    parser.add_argument("--surrogate-only", action="store_true", help="Force the surrogate solver instead of FEBio.")
+    parser.add_argument("--internal-fea", action="store_true", help="Skip FEBio and run the built-in linear tetrahedral FEA solver.")
+    parser.add_argument("--surrogate-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--febio-exe", default=None, help="Optional explicit FEBio executable path.")
     parser.add_argument("--body-mass-kg", type=float, default=55.0, help="Patient body mass in kilograms.")
     parser.add_argument("--steps-per-day", type=int, default=6000, help="Daily activity assumption.")
@@ -93,8 +94,10 @@ def _runtime_overrides(args: argparse.Namespace) -> dict:
         },
         "orchestration": {"human_in_the_loop": bool(args.human_in_the_loop)},
         "simulation": {
-            "prefer_febio": not bool(args.surrogate_only),
+            "prefer_febio": not bool(getattr(args, "internal_fea", False) or getattr(args, "surrogate_only", False)),
             "febio_exe": args.febio_exe,
+            "internal_fea_if_febio_unavailable": True,
+            "surrogate_if_febio_unavailable": False,
         },
     }
 
@@ -415,29 +418,22 @@ def run_streamlit_app() -> None:
     study_metadata = last_run.get("study_metadata", {})
     localization = study_metadata.get("leg_localization", {})
     simulation_mode = str(risk_summary.get("simulation_mode", "unknown"))
-    if simulation_mode.startswith("surrogate"):
-        fallback_messages = {
-            "surrogate": "This completed analysis used the built-in surrogate solver rather than FEBio.",
-            "surrogate_febio_failed": "FEBio did not complete successfully, so the run fell back to the built-in surrogate solver.",
-            "surrogate_no_febio": "No FEBio executable was available, so the run used the built-in surrogate solver.",
-            "surrogate_febio_import_failed": "FEBio completed, but its result files could not be imported, so the run fell back to the built-in surrogate solver.",
-        }
-        _render_solver_status(
-            "warning",
-            "Solver used for this run: fallback surrogate",
-            fallback_messages.get(
-                simulation_mode,
-                "This completed analysis used the built-in surrogate solver rather than FEBio.",
-            ),
-        )
-    elif simulation_mode.startswith("febio"):
+    if simulation_mode.startswith("febio"):
         description = "The completed analysis imported real FEBio-derived stress and strain fields."
         if simulation_mode != "febio_results_vtk":
             description = f"The completed analysis reported solver mode {simulation_mode}."
+        _render_solver_status("success", "Solver used for this run: FEBio", description)
+    elif "linear_tet" in simulation_mode or simulation_mode.startswith("linear"):
         _render_solver_status(
             "success",
-            "Solver used for this run: FEBio",
-            description,
+            "Solver used for this run: linear tetrahedral FEA",
+            "The completed analysis solved a linear-elastic tetrahedral finite-element model of the bone (not a beam-theory surrogate).",
+        )
+    elif simulation_mode.startswith("surrogate"):
+        _render_solver_status(
+            "error",
+            "Solver used for this run: unsupported surrogate",
+            "Beam-theory surrogate results are no longer produced. Re-run the analysis so it uses FEBio or the built-in linear tetrahedral FEA solver.",
         )
     else:
         _render_solver_status(

@@ -123,7 +123,7 @@ def ensure_febio(force_reinstall: bool = False) -> Optional[Path]:
         )
     except Exception as exc:
         print(f"[bootstrap] Warning: automatic FEBio setup failed: {exc}")
-        print("[bootstrap] Continuing with the built-in surrogate solver fallback.")
+        print("[bootstrap] Continuing with the built-in linear tetrahedral FEA solver.")
         return None
 
     print(f"[bootstrap] FEBio is ready at {febio_exe}")

@@ -122,7 +122,9 @@ class CPTFracturePipeline:
         artifacts.risk = risk
 
         self._emit(progress, "Creating visualizations", 0.96)
-        artifacts.visualization_paths = self.visualizer.create_outputs(simulation, risk, self.output_dir)
+        artifacts.visualization_paths = self.visualizer.create_outputs(
+            simulation, risk, self.output_dir, study=study, segmentation=segmentation
+        )
 
         self._emit(progress, "Building PDF report", 0.99)
         artifacts.report_path = self.report_builder.build(artifacts)

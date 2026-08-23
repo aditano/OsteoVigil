@@ -39,7 +39,7 @@ def build_agent_profiles() -> List[AgentProfile]:
         AgentProfile("MaterialAgent", "Material-property mapper", "Map HU to density, modulus, and strength.", "A biomechanics analyst using Bonemat-style relationships.", ["NumPy"]),
         AgentProfile("BraceContactAgent", "Brace/contact specialist", "Load or synthesize the brace and support zone.", "An orthotics modeler who keeps brace assumptions explicit.", ["STL", "PyVista"]),
         AgentProfile("FEASetupAgent", "FEBio setup specialist", "Write the FEBio model and simulation manifest.", "A finite-element engineer building open and reproducible solver decks.", ["FEBio", "XML"]),
-        AgentProfile("SimulatorAgent", "Simulation specialist", "Run FEBio or the surrogate structural solver.", "A pragmatic solver operator who always has a fallback.", ["subprocess", "surrogate_solver"]),
+        AgentProfile("SimulatorAgent", "Simulation specialist", "Run FEBio or the built-in linear tetrahedral FEA solver.", "A solver operator who prefers native FEBio and otherwise runs a real linear-elastic tetrahedral FEA, never a beam-theory surrogate.", ["subprocess", "linear_tet_fea"]),
         AgentProfile("AnalyzerAgent", "Risk-analysis specialist", "Compute fracture risk, fatigue, and recommendations.", "A risk analyst turning mechanics output into interpretable metrics.", ["NumPy", "statistics"]),
         AgentProfile("VisualizerAgent", "Visualization specialist", "Create 3D maps, dashboards, and the PDF report.", "A scientific communicator focused on usable output artifacts.", ["PyVista", "Matplotlib", "ReportLab"]),
     ]
@@ -181,6 +181,8 @@ class PipelineCrewOrchestrator:
             artifacts.simulation,
             artifacts.risk,
             self.pipeline.output_dir,
+            study=artifacts.study,
+            segmentation=artifacts.segmentation,
         )
         artifacts.report_path = PDFReportBuilder(self.pipeline.config).build(artifacts)
         artifacts.write_summary()
