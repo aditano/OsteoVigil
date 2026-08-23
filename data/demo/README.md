@@ -81,15 +81,24 @@ Default downloads (best tib/fib-adjacent tests):
 
 Also catalogued: `sts032` / `sts049` (more calf sarcomas), `sts042` (left knee), `sts051` (left popliteal fossa).
 
+These PET/CT legs series are bilateral. Use `--target-leg left` or `right` from the table; `--target-leg auto` stops and asks for a side.
+
 Example run after download:
 
 ```bash
 python main.py \
-  --dicom-dir data/external/sts028_legs \
+  --dicom-dir data/external/sts010_legs \
   --target-leg left \
   --internal-fea \
-  --output-dir outputs/sts028
+  --output-dir outputs/sts010
 ```
+
+Verified locally on the downloaded DICOMs (not committed):
+
+- These are **soft-tissue** calf/lower-limb sarcomas. Cortical tibia is usually intact, so the clinical overlay stays gray unless a low-HU bone band is present.
+- `STS_010` left: a shank-windowed rerun completed with `has_structural_defect=false`. A full-leg run can crop to the knee/thigh instead of the calf.
+- `STS_028` left: completed on a short intact shaft crop (`has_structural_defect=false`).
+- `TCGA-QQ-A8VF`: `--target-leg auto` correctly requires an explicit side.
 
 ### What these are not
 

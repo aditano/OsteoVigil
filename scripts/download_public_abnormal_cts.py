@@ -106,7 +106,7 @@ CASES: Dict[str, dict] = {
         "collection": "TCGA-SARC",
         "patient_id": "TCGA-QQ-A8VF",
         "site": "lower-limb sarcoma (BodyPartExamined=LOWERLIMB)",
-        "target_leg": "auto",
+        "target_leg": "right",
         "series_uid": "1.3.6.1.4.1.14519.5.2.1.3023.4024.303123119074665705294749259172",
         "zip_name": "tcga_a8vf_lowerlimb_ct.zip",
         "extract_dir": "tcga_a8vf_lowerlimb",
