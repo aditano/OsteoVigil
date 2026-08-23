@@ -111,3 +111,37 @@ def test_segmentation_handles_gap_region_without_breaking_shape():
     assert z_profile[-10:].max() > 0
     assert mask.mean() < 0.2
     assert mask.dtype == bool or mask.dtype == np.bool_
+    assert mask[gap_start:gap_end].any()
+
+
+def test_locate_pseudarthrosis_slice_prefers_interior_defect():
+    from cpt_predictor.segmentation import locate_pseudarthrosis_slice
+
+    volume = _synthetic_ct_with_tibia_and_pseudarthrosis()
+    mask = volume > 180
+    # Include the low-HU gap in the mask so HU scoring can still see the defect band.
+    gap_start = volume.shape[0] // 2 - 4
+    gap_end = volume.shape[0] // 2 + 4
+    filled = mask.copy()
+    filled[gap_start:gap_end] = mask[0]
+    defect = locate_pseudarthrosis_slice(filled, volume)
+    assert gap_start - 2 <= defect <= gap_end + 1
+    assert defect > 8
+    assert defect < volume.shape[0] - 8
+
+
+def test_classical_segmentation_skips_compact_distal_tarsal_blob():
+    from cpt_predictor.segmentation import classical_tibia_segmentation
+
+    shape = (80, 48, 48)
+    volume = np.full(shape, -900.0, dtype=np.float32)
+    z, y, x = np.indices(shape)
+    tibia = ((y - 24) ** 2 + (x - 24) ** 2) <= 10**2
+    tibia &= (z >= 10) & (z <= 70)
+    volume[tibia] = 950.0
+    talus = ((y - 24) ** 2 + (x - 24) ** 2) <= 8**2
+    talus &= (z >= 1) & (z <= 5)
+    volume[talus] = 1100.0
+    mask = classical_tibia_segmentation(volume)
+    assert mask[tibia].mean() > 0.8
+    assert mask[talus].mean() < 0.2

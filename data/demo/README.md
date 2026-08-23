@@ -59,9 +59,58 @@ python main.py \
   --output-dir outputs/demo_normal_real_agents
 ```
 
+## Public Abnormal Tib/Fib CTs (Not Bundled)
+
+No public archive currently hosts a downloadable congenital-pseudarthrosis-of-the-tibia CT volume. The closest **real 3D CT** series with tibia/fibula anatomy plus a documented lower-leg abnormality are extremity sarcomas on TCIA.
+
+Those DICOMs are large and stay gitignored under `data/external/` and `data/downloaded/`. Fetch them with:
+
+```bash
+python scripts/download_public_abnormal_cts.py --list
+python scripts/download_public_abnormal_cts.py
+```
+
+Default downloads (best tib/fib-adjacent tests):
+
+| Case | Patient | Documented site | Target leg | Collection |
+| --- | --- | --- | --- | --- |
+| `sts028` | STS_028 | left calf extraskeletal osteogenic sarcoma | left | [Soft-tissue-Sarcoma](http://doi.org/10.7937/K9/TCIA.2015.7GO2GSKS) |
+| `sts010` | STS_010 | left calf myxofibrosarcoma | left | same |
+| `sts025` | STS_025 | right calf MFH | right | same |
+| `tcga_a8vf` | TCGA-QQ-A8VF | lower-limb sarcoma CT | auto | [TCGA-SARC](https://doi.org/10.7937/K9/TCIA.2016.CX6YLSUX) |
+
+Also catalogued: `sts032` / `sts049` (more calf sarcomas), `sts042` (left knee), `sts051` (left popliteal fossa).
+
+These PET/CT legs series are bilateral. Use `--target-leg left` or `right` from the table; `--target-leg auto` stops and asks for a side.
+
+Example run after download:
+
+```bash
+python main.py \
+  --dicom-dir data/external/sts010_legs \
+  --target-leg left \
+  --internal-fea \
+  --output-dir outputs/sts010
+```
+
+Verified locally on the downloaded DICOMs (not committed):
+
+- These are **soft-tissue** calf/lower-limb sarcomas. Cortical tibia is usually intact, so the clinical overlay stays gray unless a low-HU bone band is present.
+- `STS_010` left: a shank-windowed rerun completed with `has_structural_defect=false`. A full-leg run can crop to the knee/thigh instead of the calf.
+- `STS_028` left: completed on a short intact shaft crop (`has_structural_defect=false`).
+- `TCGA-QQ-A8VF`: `--target-leg auto` correctly requires an explicit side.
+
+### What these are not
+
+- They are **not** CPT. Cortical bone may still be intact; the abnormality is usually a calf or popliteal soft-tissue mass next to the shaft.
+- [PlaTiF](https://doi.org/10.5281/zenodo.18007397) has real tibial-plateau fractures, but as 2D coronal `.mat` slices plus X-rays, not a 3D DICOM shaft series.
+- The kc-santosh fractured-limbs GitHub sample only ships a couple of incomplete `.dcm` files per case.
+
+Tumor sites for Soft-tissue-Sarcoma come from `INFOclinical_STS.xlsx` on the TCIA collection page (CC BY 3.0).
+
 ## Validation Performed
 
-Both demo folders were loaded successfully using `src/cpt_predictor/io/dicom_loader.py`.
+Both bundled demo folders were loaded successfully using `src/cpt_predictor/io/dicom_loader.py`.
 
 - `normal_real_talocrural`: shape `(325, 400, 400)`, spacing `(0.4, 0.4, 0.4)`
 - `abnormal_synthetic_cpt`: shape `(180, 144, 144)`, spacing `(1.1, 0.8, 0.8)`

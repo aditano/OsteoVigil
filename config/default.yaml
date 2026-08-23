@@ -83,7 +83,10 @@ loads:
 simulation:
   prefer_febio: true
   febio_exe: null
-  surrogate_if_febio_unavailable: true
+  internal_fea_if_febio_unavailable: true
+  surrogate_if_febio_unavailable: false
+  internal_fea_rtol: 1.0e-4
+  internal_fea_maxiter: 2000
   time_steps: 10
   step_size: 0.1
   febio_solver_type: auto

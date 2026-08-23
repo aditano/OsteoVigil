@@ -52,12 +52,6 @@ def _iter_dicom_files(dicom_dir: Path) -> list[Path]:
     return sorted(dicom_files)
 
 
-def _apply_slope_intercept(image: Any, array: np.ndarray) -> np.ndarray:
-    slope = float(image.GetMetaData("0028|1053")) if image.HasMetaDataKey("0028|1053") else 1.0
-    intercept = float(image.GetMetaData("0028|1052")) if image.HasMetaDataKey("0028|1052") else 0.0
-    return array * slope + intercept
-
-
 def _load_with_simpleitk(dicom_dir: Path) -> CTVolume:
     if sitk is None:
         raise ImportError("SimpleITK is not installed")
@@ -67,11 +61,19 @@ def _load_with_simpleitk(dicom_dir: Path) -> CTVolume:
     if not series_ids:
         raise FileNotFoundError(f"No DICOM series found in {dicom_dir}")
 
-    series_files = reader.GetGDCMSeriesFileNames(str(dicom_dir), series_ids[0])
+    series_files = max(
+        (reader.GetGDCMSeriesFileNames(str(dicom_dir), series_id) for series_id in series_ids),
+        key=len,
+    )
+    if len(series_files) < 2:
+        raise FileNotFoundError(
+            f"No multi-slice DICOM series found in {dicom_dir}; falling back to file-wise loading."
+        )
     reader.SetFileNames(series_files)
     image = reader.Execute()
     array = sitk.GetArrayFromImage(image).astype(np.float32)
-    array = _apply_slope_intercept(image, array)
+    # SimpleITK/GDCM already applies Rescale Slope/Intercept. Re-applying the
+    # stored tags would double-scale studies that still expose those DICOM fields.
 
     spacing_xyz = image.GetSpacing()
     origin_xyz = image.GetOrigin()
@@ -118,10 +120,13 @@ def _load_with_pydicom(dicom_dir: Path) -> CTVolume:
     volume = np.stack(pixel_arrays, axis=0)
     spacing_y = float(getattr(first, "PixelSpacing", [1.0, 1.0])[0])
     spacing_x = float(getattr(first, "PixelSpacing", [1.0, 1.0])[1])
+    spacing_z = 0.0
     if len(datasets) > 1 and hasattr(datasets[0], "ImagePositionPatient") and hasattr(datasets[1], "ImagePositionPatient"):
         spacing_z = abs(float(datasets[1].ImagePositionPatient[2]) - float(datasets[0].ImagePositionPatient[2]))
-    else:
-        spacing_z = float(getattr(first, "SliceThickness", 1.0))
+    if spacing_z < 1e-6:
+        spacing_z = float(getattr(first, "SliceThickness", 1.0) or 1.0)
+    if spacing_z < 1e-6:
+        spacing_z = 1.0
 
     origin = getattr(first, "ImagePositionPatient", (0.0, 0.0, 0.0))
     direction = tuple(float(v) for v in getattr(first, "ImageOrientationPatient", [1, 0, 0, 0, 1, 0]))

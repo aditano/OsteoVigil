@@ -39,8 +39,9 @@ def generate_synthetic_ct_volume(config: Dict[str, Any]) -> Tuple[np.ndarray, Tu
 
     volume[cortical] = 1250.0 + rng.normal(0.0, 60.0, size=int(cortical.sum()))
     volume[trabecular] = 350.0 + rng.normal(0.0, 40.0, size=int(trabecular.sum()))
-    volume[shaft & defect_band] = 120.0 + rng.normal(0.0, 20.0, size=int((shaft & defect_band).sum()))
     volume[shaft & periosteal_bulge] += 180.0
+    # Keep the band above the bone HU threshold so it remains in the mesh as weak tissue.
+    volume[shaft & defect_band] = 200.0 + rng.normal(0.0, 15.0, size=int((shaft & defect_band).sum()))
     volume = np.clip(volume, -1000.0, 2500.0).astype(np.float32)
     return volume, spacing
 

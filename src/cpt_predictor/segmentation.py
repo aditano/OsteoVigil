@@ -41,6 +41,41 @@ def _segmentation_config(config: Optional[Dict[str, Any]] = None, overrides: Opt
     return base
 
 
+def locate_pseudarthrosis_slice(
+    mask: np.ndarray,
+    hu_volume: Optional[np.ndarray] = None,
+    interior_fraction: float = 0.12,
+) -> int:
+    """Pick a mid-shaft defect slice instead of a tapered bone end."""
+    slice_area = np.asarray(mask, dtype=bool).sum(axis=(1, 2)).astype(float)
+    nonzero = np.where(slice_area > 1e-3)[0]
+    if nonzero.size == 0:
+        return 0
+
+    z0 = int(nonzero[0])
+    z1 = int(nonzero[-1]) + 1
+    length = z1 - z0
+    margin = max(2, int(interior_fraction * length)) if length >= 16 else 0
+    interior = np.arange(z0 + margin, max(z0 + margin + 1, z1 - margin))
+    if interior.size == 0:
+        interior = nonzero
+
+    area_vals = np.maximum(slice_area[interior], 1.0)
+    area_score = area_vals / max(float(np.median(area_vals)), 1.0)
+
+    if hu_volume is None:
+        return int(interior[int(np.argmin(area_vals))])
+
+    hu_means = np.zeros(interior.shape[0], dtype=float)
+    for index, z_index in enumerate(interior):
+        voxels = np.asarray(hu_volume[z_index][mask[z_index]], dtype=float)
+        hu_means[index] = float(voxels.mean()) if voxels.size else 0.0
+    hu_median = float(np.median(hu_means)) if hu_means.size else 1.0
+    hu_score = hu_means / max(hu_median, 1.0)
+    combined = 0.45 * area_score + 0.55 * hu_score
+    return int(interior[int(np.argmin(combined))])
+
+
 def classical_tibia_segmentation(
     hu_volume: np.ndarray,
     config: Optional[Dict[str, Any]] = None,
@@ -56,8 +91,9 @@ def classical_tibia_segmentation(
     radius = max(1, int(seg_cfg.get("morphology_radius_voxels", 2)))
 
     mask = hu_volume >= threshold
-    structure = np.ones((bridge_gap, 3, 3), dtype=bool)
-    mask = ndi.binary_closing(mask, structure=structure)
+    # Close only along the slice axis so CPT gaps are bridged without welding
+    # the tibia to the fibula or tarsal bones across the joint space.
+    mask = ndi.binary_closing(mask, structure=np.ones((bridge_gap, 1, 1), dtype=bool))
     mask = ndi.binary_opening(mask, structure=np.ones((1, 3, 3), dtype=bool))
     mask = ndi.binary_fill_holes(mask)
     mask = morphology.remove_small_objects(mask.astype(bool), min_size=min_size)
@@ -68,9 +104,7 @@ def classical_tibia_segmentation(
 
     center_y = hu_volume.shape[1] / 2.0
     center_x = hu_volume.shape[2] / 2.0
-    best_label = None
-    best_score = -1.0
-
+    scored: list[tuple[float, Any]] = []
     for region in measure.regionprops(labeled):
         z0, y0, x0, z1, y1, x1 = region.bbox
         z_extent = z1 - z0
@@ -78,16 +112,41 @@ def classical_tibia_segmentation(
         cy = float(region.centroid[1])
         center_penalty = abs(cx - center_x) + abs(cy - center_y)
         score = float(region.area) + (25.0 * z_extent) - (4.0 * center_penalty)
-        if score > best_score:
-            best_score = score
-            best_label = region.label
+        scored.append((score, region))
 
-    selected = labeled == best_label
-    selected = ndi.binary_closing(selected, structure=np.ones((bridge_gap, 3, 3), dtype=bool))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    primary = scored[0][1]
+    primary_cy = float(primary.centroid[1])
+    primary_cx = float(primary.centroid[2])
+    primary_z0, primary_z1 = int(primary.bbox[0]), int(primary.bbox[3])
+    primary_length = max(1, primary_z1 - primary_z0)
+    primary_radius = max(np.sqrt(float(primary.area) / (primary_length * np.pi)), 6.0)
+    keep_labels = {primary.label}
+
+    # CPT defects can split one tibia into axially separated fragments. Keep those
+    # co-axial pieces, but skip parallel bones such as the fibula that overlap in z
+    # and compact tarsal bones that sit beyond the plafond.
+    min_fragment_length = max(8, int(0.12 * primary_length))
+    for _score, region in scored[1:]:
+        offset = np.hypot(float(region.centroid[2]) - primary_cx, float(region.centroid[1]) - primary_cy)
+        if offset > 1.5 * primary_radius:
+            continue
+        z0, z1 = int(region.bbox[0]), int(region.bbox[3])
+        overlap = min(primary_z1, z1) - max(primary_z0, z0)
+        fragment_length = max(1, z1 - z0)
+        if overlap > 0.25 * min(primary_length, fragment_length):
+            continue
+        if fragment_length < min_fragment_length:
+            continue
+        keep_labels.add(region.label)
+
+    selected = np.isin(labeled, list(keep_labels))
+    z_kernel = max(bridge_gap * 2 + 1, 9)
+    selected = ndi.binary_closing(selected, structure=np.ones((z_kernel, 1, 1), dtype=bool))
     selected = ndi.binary_fill_holes(selected)
     selected = morphology.remove_small_objects(selected.astype(bool), min_size=min_size)
     selected = ndi.binary_dilation(selected, iterations=radius)
-    selected = ndi.binary_erosion(selected, iterations=max(1, radius - 1))
+    selected = ndi.binary_erosion(selected, iterations=radius)
     return selected.astype(bool)
 
 
@@ -148,9 +207,7 @@ class TibiaSegmenter:
         else:
             mask = classical_tibia_segmentation(study_data.hu_volume, self.config)
 
-        slice_area = mask.sum(axis=(1, 2)).astype(float)
-        nonzero = np.where(slice_area > 0)[0]
-        defect_index = int(nonzero[np.argmin(slice_area[nonzero])]) if len(nonzero) else 0
+        defect_index = locate_pseudarthrosis_slice(mask, study_data.hu_volume)
 
         stats = {
             "voxel_count": int(mask.sum()),
