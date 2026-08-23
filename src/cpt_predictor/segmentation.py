@@ -91,8 +91,9 @@ def classical_tibia_segmentation(
     radius = max(1, int(seg_cfg.get("morphology_radius_voxels", 2)))
 
     mask = hu_volume >= threshold
-    structure = np.ones((bridge_gap, 3, 3), dtype=bool)
-    mask = ndi.binary_closing(mask, structure=structure)
+    # Close only along the slice axis so CPT gaps are bridged without welding
+    # the tibia to the fibula or tarsal bones across the joint space.
+    mask = ndi.binary_closing(mask, structure=np.ones((bridge_gap, 1, 1), dtype=bool))
     mask = ndi.binary_opening(mask, structure=np.ones((1, 3, 3), dtype=bool))
     mask = ndi.binary_fill_holes(mask)
     mask = morphology.remove_small_objects(mask.astype(bool), min_size=min_size)
@@ -123,7 +124,9 @@ def classical_tibia_segmentation(
     keep_labels = {primary.label}
 
     # CPT defects can split one tibia into axially separated fragments. Keep those
-    # co-axial pieces, but skip parallel bones such as the fibula that overlap in z.
+    # co-axial pieces, but skip parallel bones such as the fibula that overlap in z
+    # and compact tarsal bones that sit beyond the plafond.
+    min_fragment_length = max(8, int(0.12 * primary_length))
     for _score, region in scored[1:]:
         offset = np.hypot(float(region.centroid[2]) - primary_cx, float(region.centroid[1]) - primary_cy)
         if offset > 1.5 * primary_radius:
@@ -133,11 +136,13 @@ def classical_tibia_segmentation(
         fragment_length = max(1, z1 - z0)
         if overlap > 0.25 * min(primary_length, fragment_length):
             continue
+        if fragment_length < min_fragment_length:
+            continue
         keep_labels.add(region.label)
 
     selected = np.isin(labeled, list(keep_labels))
     z_kernel = max(bridge_gap * 2 + 1, 9)
-    selected = ndi.binary_closing(selected, structure=np.ones((z_kernel, 3, 3), dtype=bool))
+    selected = ndi.binary_closing(selected, structure=np.ones((z_kernel, 1, 1), dtype=bool))
     selected = ndi.binary_fill_holes(selected)
     selected = morphology.remove_small_objects(selected.astype(bool), min_size=min_size)
     selected = ndi.binary_dilation(selected, iterations=radius)

@@ -43,6 +43,43 @@ class ResultVisualizer:
     def _point_data(mesh) -> Dict:
         return getattr(mesh, "point_data", None) or getattr(mesh, "point_data", {})
 
+    @staticmethod
+    def select_interior_extrema(
+        centers: np.ndarray,
+        stress: np.ndarray,
+        safety: Optional[np.ndarray] = None,
+        modulus: Optional[np.ndarray] = None,
+        margin: float = 0.12,
+        min_modulus_mpa: float = 1000.0,
+    ) -> Tuple[int, int]:
+        """Pick peak-stress and lowest-SF cells away from proximal/distal load bands."""
+        centers = np.asarray(centers, dtype=float)
+        stress = np.asarray(stress, dtype=float)
+        n = int(centers.shape[0])
+        if n == 0:
+            return 0, 0
+        z = centers[:, 2]
+        span = max(float(np.max(z) - np.min(z)), 1e-6)
+        zrel = (z - float(np.min(z))) / span
+        interior = (zrel >= float(margin)) & (zrel <= 1.0 - float(margin))
+        eligible = interior & np.isfinite(stress)
+        if not eligible.any():
+            eligible = np.isfinite(stress)
+        if modulus is not None:
+            modulus = np.asarray(modulus, dtype=float)
+            if modulus.size == n:
+                cortical = eligible & np.isfinite(modulus) & (modulus >= float(min_modulus_mpa))
+                if cortical.any():
+                    eligible = cortical
+        hotspot = int(np.nanargmax(np.where(eligible, stress, -np.inf)))
+        if safety is None:
+            return hotspot, hotspot
+        safety = np.asarray(safety, dtype=float)
+        if safety.size != n or not np.isfinite(safety[eligible]).any():
+            return hotspot, hotspot
+        weakest = int(np.nanargmin(np.where(eligible & np.isfinite(safety), safety, np.inf)))
+        return hotspot, weakest
+
     def _get_stress_values(self, mesh) -> np.ndarray:
         cell_data = self._cell_data(mesh)
         stress = np.asarray(cell_data.get("von_mises_mpa", []), dtype=float)
@@ -226,6 +263,17 @@ class ResultVisualizer:
             interpolation="nearest",
             alpha=0.92,
         )
+        if np.isfinite(hu).any():
+            silhouette = np.isfinite(hu).astype(float)
+            ax.contour(
+                silhouette,
+                levels=[0.5],
+                extent=extent,
+                origin="lower",
+                colors="#8ecae6",
+                linewidths=0.7,
+                alpha=0.85,
+            )
         if hotspot_xy is not None:
             ax.scatter(
                 [hotspot_xy[0]],
@@ -288,13 +336,10 @@ class ResultVisualizer:
         if vmax <= vmin:
             vmax = vmin + 1.0
 
-        hotspot_index = int(np.nanargmax(np.where(np.isfinite(stress), stress, -np.inf)))
         cell_data = self._cell_data(mesh)
         safety = np.asarray(cell_data.get("safety_factor", np.full(centers.shape[0], np.nan)), dtype=float)
-        if safety.size == centers.shape[0] and np.isfinite(safety).any():
-            weakest_index = int(np.nanargmin(np.where(np.isfinite(safety), safety, np.inf)))
-        else:
-            weakest_index = hotspot_index
+        modulus = np.asarray(cell_data.get("youngs_modulus_mpa", np.full(centers.shape[0], np.nan)), dtype=float)
+        hotspot_index, weakest_index = self.select_interior_extrema(centers, stress, safety=safety, modulus=modulus)
 
         fig, axes = plt.subplots(1, 2, figsize=(9.2, 10.5), facecolor="#111318")
         image = None

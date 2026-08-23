@@ -128,3 +128,20 @@ def test_locate_pseudarthrosis_slice_prefers_interior_defect():
     assert gap_start - 2 <= defect <= gap_end + 1
     assert defect > 8
     assert defect < volume.shape[0] - 8
+
+
+def test_classical_segmentation_skips_compact_distal_tarsal_blob():
+    from cpt_predictor.segmentation import classical_tibia_segmentation
+
+    shape = (80, 48, 48)
+    volume = np.full(shape, -900.0, dtype=np.float32)
+    z, y, x = np.indices(shape)
+    tibia = ((y - 24) ** 2 + (x - 24) ** 2) <= 10**2
+    tibia &= (z >= 10) & (z <= 70)
+    volume[tibia] = 950.0
+    talus = ((y - 24) ** 2 + (x - 24) ** 2) <= 8**2
+    talus &= (z >= 1) & (z <= 5)
+    volume[talus] = 1100.0
+    mask = classical_tibia_segmentation(volume)
+    assert mask[tibia].mean() > 0.8
+    assert mask[talus].mean() < 0.2
