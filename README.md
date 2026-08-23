@@ -269,10 +269,12 @@ macOS note:
 
 ## Demo Cases
 
-Two demo cases are included under [data/demo/README.md](/Users/anthonyditano/Documents/GitHub/OsteoVigil/data/demo/README.md):
+Two demo cases are included under [data/demo/README.md](data/demo/README.md):
 
 - `normal_real_talocrural`: a real public distal tibia/fibula/ankle DICOM series
 - `abnormal_synthetic_cpt`: a synthetic CPT-style abnormal DICOM series with a proxy brace STL
+
+Public **abnormal** tib/fib CTs are not bundled (no open CPT volume exists). `scripts/download_public_abnormal_cts.py` fetches TCIA calf/lower-limb sarcoma CTs into the gitignored `data/external/` folder. See [data/demo/README.md](data/demo/README.md#public-abnormal-tibfib-cts-not-bundled).
 
 In the Streamlit UI, these now appear as an explicit bundled-demo selector so you can choose the normal/good or abnormal/bad tibia demo without relying on the older synthetic fallback wording. The results view also includes a direct PDF export button and focuses on charts rather than raw JSON output.
 
