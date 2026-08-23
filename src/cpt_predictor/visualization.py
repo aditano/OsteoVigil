@@ -238,9 +238,17 @@ class ResultVisualizer:
         lat_h = abs(float(lat_extent[3]) - float(lat_extent[2]))
         data_w = max(ap_w + lat_w, 1.0)
         data_h = max(ap_h, lat_h, 1.0)
-        fig_w = 10.4
-        fig_h = fig_w * (data_h / data_w) * 0.95
-        return fig_w, float(np.clip(fig_h, 6.8, 16.0))
+        # Colorbar and labels add width; keep the figure aspect close to the bone
+        # so equal-aspect axes are not letterboxed into tiny columns.
+        target_aspect = data_h / (data_w * 1.22)
+        max_w, max_h = 14.0, 16.0
+        if target_aspect >= max_h / max_w:
+            fig_h = max_h
+            fig_w = fig_h / target_aspect
+        else:
+            fig_w = max_w
+            fig_h = fig_w * target_aspect
+        return float(np.clip(fig_w, 6.6, max_w)), float(np.clip(fig_h, 6.6, max_h))
 
     def _mip_from_points(self, centers: np.ndarray, stress: np.ndarray, bins: int = 220) -> Dict[str, np.ndarray]:
         def _project(horizontal: np.ndarray, vertical: np.ndarray) -> Tuple[np.ndarray, Tuple[float, float, float, float]]:
@@ -307,7 +315,7 @@ class ResultVisualizer:
                 origin="lower",
                 extent=extent,
                 cmap="gray",
-                aspect="equal",
+                aspect="auto",
                 vmin=float(np.nanpercentile(hu, 5)) if np.isfinite(hu).any() else 0.0,
                 vmax=float(np.nanpercentile(hu, 98)) if np.isfinite(hu).any() else 1.0,
                 alpha=0.88,
@@ -317,7 +325,7 @@ class ResultVisualizer:
             overlay,
             origin="lower",
             extent=extent,
-            aspect="equal",
+            aspect="auto",
             interpolation="nearest",
         )
         mapped = ScalarMappable(norm=Normalize(vmin=0.0, vmax=1.0), cmap="inferno")
@@ -423,11 +431,14 @@ class ResultVisualizer:
         hotspot_util = float(utilization[hotspot_index]) if np.isfinite(utilization[hotspot_index]) else float("nan")
         weakest_util = float(utilization[weakest_index]) if np.isfinite(utilization[weakest_index]) else float("nan")
 
+        ap_w = max(abs(float(views["ap_extent"][1]) - float(views["ap_extent"][0])), 1.0)
+        lat_w = max(abs(float(views["lateral_extent"][1]) - float(views["lateral_extent"][0])), 1.0)
         fig, axes = plt.subplots(
             1,
             2,
             figsize=self._heatmap_figsize(views["ap_extent"], views["lateral_extent"]),
             facecolor="#111318",
+            width_ratios=[ap_w, lat_w],
         )
         image = None
         specs = (
