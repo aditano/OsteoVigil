@@ -52,12 +52,6 @@ def _iter_dicom_files(dicom_dir: Path) -> list[Path]:
     return sorted(dicom_files)
 
 
-def _apply_slope_intercept(image: Any, array: np.ndarray) -> np.ndarray:
-    slope = float(image.GetMetaData("0028|1053")) if image.HasMetaDataKey("0028|1053") else 1.0
-    intercept = float(image.GetMetaData("0028|1052")) if image.HasMetaDataKey("0028|1052") else 0.0
-    return array * slope + intercept
-
-
 def _load_with_simpleitk(dicom_dir: Path) -> CTVolume:
     if sitk is None:
         raise ImportError("SimpleITK is not installed")
@@ -71,7 +65,8 @@ def _load_with_simpleitk(dicom_dir: Path) -> CTVolume:
     reader.SetFileNames(series_files)
     image = reader.Execute()
     array = sitk.GetArrayFromImage(image).astype(np.float32)
-    array = _apply_slope_intercept(image, array)
+    # SimpleITK/GDCM already applies Rescale Slope/Intercept. Re-applying the
+    # stored tags would double-scale studies that still expose those DICOM fields.
 
     spacing_xyz = image.GetSpacing()
     origin_xyz = image.GetOrigin()

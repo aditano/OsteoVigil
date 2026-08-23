@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 
 from .models import BraceModel, FEBioSetup, MaterialResult, MeshResult, SegmentationResult, SimulationResult, StudyData
+from .segmentation import locate_pseudarthrosis_slice
 from .utils.febio_manager import resolve_managed_febio_executable
 
 
@@ -220,6 +221,30 @@ class FEBioRunner:
     def _slice_area_profile(self, segmentation: SegmentationResult, study: StudyData) -> np.ndarray:
         return segmentation.mask.sum(axis=(1, 2)).astype(float) * study.spacing_zyx[1] * study.spacing_zyx[2]
 
+    def _stabilize_area_profile(self, slice_area: np.ndarray) -> tuple[np.ndarray, int, float]:
+        nonzero = np.where(slice_area > 1e-3)[0]
+        if nonzero.size == 0:
+            return np.full_like(slice_area, 100.0), 0, 100.0
+
+        z0 = int(nonzero[0])
+        z1 = int(nonzero[-1]) + 1
+        length = z1 - z0
+        margin = max(2, int(0.12 * length)) if length >= 16 else 0
+        interior_z0 = z0 + margin
+        interior_z1 = max(interior_z0 + 1, z1 - margin)
+        interior = slice_area[interior_z0:interior_z1]
+        if interior.size == 0:
+            interior = slice_area[nonzero]
+            interior_z0, interior_z1 = z0, z1
+
+        floor_area = max(1.0, float(np.percentile(interior, 15)))
+        area_profile = np.array(slice_area, dtype=float)
+        area_profile[:interior_z0] = max(float(interior[0]), floor_area)
+        area_profile[interior_z1:] = max(float(interior[-1]), floor_area)
+        area_profile = np.maximum(area_profile, floor_area)
+        defect_slice = int(interior_z0 + int(np.argmin(interior))) if interior.size else int(nonzero[0])
+        return area_profile, defect_slice, floor_area
+
     def _run_surrogate(
         self,
         study: StudyData,
@@ -234,17 +259,13 @@ class FEBioRunner:
         strength = np.asarray(mesh.cell_data["yield_strength_mpa"], dtype=float)
 
         slice_area = self._slice_area_profile(segmentation, study)
-        nonzero = np.where(slice_area > 1e-3)[0]
-        if len(nonzero):
-            defect_slice = int(nonzero[np.argmin(slice_area[nonzero])])
-            min_area = max(1.0, float(slice_area[defect_slice]))
-        else:
-            defect_slice = 0
-            min_area = 100.0
+        area_profile, area_defect_slice, _floor_area = self._stabilize_area_profile(slice_area)
+        defect_slice = locate_pseudarthrosis_slice(segmentation.mask, study.hu_volume)
+        if defect_slice < 0 or defect_slice >= slice_area.shape[0]:
+            defect_slice = area_defect_slice
 
         defect_z = study.origin_xyz[2] + defect_slice * study.spacing_zyx[0]
         z_positions = study.origin_xyz[2] + np.arange(study.hu_volume.shape[0]) * study.spacing_zyx[0]
-        area_profile = np.maximum(slice_area, min_area)
         radius_profile = np.sqrt(area_profile / np.pi)
 
         x_center = 0.5 * (float(mesh.bounds[0]) + float(mesh.bounds[1]))

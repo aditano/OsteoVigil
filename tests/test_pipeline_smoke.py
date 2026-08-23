@@ -131,3 +131,39 @@ def test_pipeline_smoke_creates_summary_artifacts(tmp_path):
 
     produced_files = list(output_dir.glob("*"))
     assert produced_files, "pipeline should emit at least one artifact"
+
+
+def test_agent_orchestrator_writes_summary_json(tmp_path):
+    from cpt_predictor.pipeline import CPTFracturePipeline
+
+    output_dir = tmp_path / "agent_outputs"
+    pipeline = CPTFracturePipeline(
+        output_dir=str(output_dir),
+        allow_dummy_if_missing=True,
+    )
+    artifacts = pipeline.run(use_agents=True)
+    summary_path = output_dir / "summary.json"
+    assert summary_path.exists()
+    summary = json.loads(summary_path.read_text())
+    assert summary.get("fracture_risk")
+    assert (output_dir / "crew_manifest.json").exists()
+    assert artifacts.risk is not None
+
+
+def test_pipeline_summary_serializes_non_finite_values(tmp_path):
+    from cpt_predictor.models import PipelineArtifacts, RiskAssessment
+
+    artifacts = PipelineArtifacts(output_dir=tmp_path)
+    artifacts.risk = RiskAssessment(
+        summary={
+            "risk_category": "lower",
+            "min_safety_factor": 3.2,
+            "years_to_failure_estimate": float("inf"),
+        },
+        recommendations=[],
+        summary_path=tmp_path / "risk.json",
+    )
+    summary_path = artifacts.write_summary()
+    summary = json.loads(summary_path.read_text())
+    assert summary["estimated_years_to_failure"] is None
+    assert summary["fracture_risk"] == "lower"

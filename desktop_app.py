@@ -346,6 +346,7 @@ class PipelineWorker(QThread):
         steps_per_day: int,
         use_dummy: bool,
         use_agents: bool,
+        target_leg: str = "auto",
         parent=None,
     ):
         super().__init__(parent)
@@ -356,11 +357,14 @@ class PipelineWorker(QThread):
         self.steps_per_day = steps_per_day
         self.use_dummy = use_dummy
         self.use_agents = use_agents
+        self.target_leg = target_leg
 
     def _progress_callback(self, stage: str, pct: float):
         self.progress_updated.emit(stage, pct)
 
     def run(self):
+        from cpt_predictor.preprocessing import MultipleLegSelectionRequiredError
+
         try:
             # Import inside run() to avoid startup import errors if deps are missing
             from cpt_predictor.pipeline import CPTFracturePipeline
@@ -368,7 +372,10 @@ class PipelineWorker(QThread):
             pipeline = CPTFracturePipeline(
                 output_dir=self.output_dir,
                 overrides={
-                    "input": {"allow_dummy_if_missing": self.use_dummy},
+                    "input": {
+                        "allow_dummy_if_missing": self.use_dummy,
+                        "target_leg_side": self.target_leg,
+                    },
                     "patient": {
                         "body_mass_kg": self.body_mass,
                         "steps_per_day": self.steps_per_day,
@@ -395,6 +402,10 @@ class PipelineWorker(QThread):
 
             self.pipeline_finished.emit(artifacts)
 
+        except MultipleLegSelectionRequiredError:
+            self.pipeline_error.emit(
+                "This CT includes more than one leg. Choose Left or Right under Target Leg, then run again."
+            )
         except Exception:
             self.pipeline_error.emit(traceback.format_exc())
 
@@ -633,6 +644,17 @@ class MainWindow(QMainWindow):
         steps_col.addWidget(self.steps_spin)
         num_row.addLayout(steps_col)
 
+        leg_col = QVBoxLayout()
+        leg_col.setSpacing(4)
+        leg_col.addWidget(self._field_label("Target Leg", "For bilateral or full-body CTs"))
+        self.leg_combo = QComboBox()
+        self.leg_combo.addItem("Auto", "auto")
+        self.leg_combo.addItem("Left", "left")
+        self.leg_combo.addItem("Right", "right")
+        self.leg_combo.setToolTip("Choose left or right when the scan includes both legs.")
+        leg_col.addWidget(self.leg_combo)
+        num_row.addLayout(leg_col)
+
         num_row.addStretch()
         layout.addLayout(num_row)
 
@@ -698,7 +720,7 @@ class MainWindow(QMainWindow):
         return False, self.dicom_edit.text().strip() or None, self.brace_edit.text().strip() or None
 
     def _current_input_state(self) -> tuple[bool, str | None, str]:
-        _use_demo, dicom_dir, brace_stl = self._resolved_inputs()
+        use_demo, dicom_dir, brace_stl = self._resolved_inputs()
 
         if use_demo:
             if not dicom_dir or not os.path.isdir(dicom_dir):
@@ -808,6 +830,7 @@ class MainWindow(QMainWindow):
             return
 
         use_demo, dicom_dir, brace_stl = self._resolved_inputs()
+        target_leg = self.leg_combo.currentData() or "auto"
 
         use_agents = self.agent_check.isChecked()
 
@@ -825,6 +848,7 @@ class MainWindow(QMainWindow):
             steps_per_day=self.steps_spin.value(),
             use_dummy=False,
             use_agents=use_agents,
+            target_leg=str(target_leg),
         )
         self._worker.progress_updated.connect(self._on_progress)
         self._worker.pipeline_finished.connect(self._on_finished)

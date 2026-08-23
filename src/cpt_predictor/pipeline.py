@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -72,18 +71,15 @@ class CPTFracturePipeline:
         **_: Any,
     ) -> PipelineArtifacts:
         if use_agents:
-            try:
-                from .agents.crew import PipelineCrewOrchestrator
+            from .agents.crew import PipelineCrewOrchestrator
 
-                orchestrator = PipelineCrewOrchestrator(self)
-                return orchestrator.run(
-                    dicom_dir=dicom_dir,
-                    brace_stl=brace_stl,
-                    human_in_the_loop=human_in_the_loop,
-                    progress=progress,
-                )
-            except Exception as exc:
-                self.logger.warning("Falling back to direct pipeline execution: %s", exc)
+            orchestrator = PipelineCrewOrchestrator(self)
+            return orchestrator.run(
+                dicom_dir=dicom_dir,
+                brace_stl=brace_stl,
+                human_in_the_loop=human_in_the_loop,
+                progress=progress,
+            )
 
         artifacts = PipelineArtifacts(output_dir=self.output_dir)
 
@@ -130,28 +126,6 @@ class CPTFracturePipeline:
 
         self._emit(progress, "Building PDF report", 0.99)
         artifacts.report_path = self.report_builder.build(artifacts)
-
-        summary_path = self.output_dir / "summary.json"
-        summary_payload = {
-            "output_dir": str(self.output_dir),
-            "leg_localization": artifacts.study.metadata.get("leg_localization", {}) if artifacts.study else {},
-            "segmentation": artifacts.segmentation.stats if artifacts.segmentation else {},
-            "mesh": artifacts.mesh.stats if artifacts.mesh else {},
-            "materials": artifacts.materials.stats if artifacts.materials else {},
-            "brace": {
-                "enabled": artifacts.brace.enabled if artifacts.brace else False,
-                "source": artifacts.brace.source if artifacts.brace else "none",
-            },
-            "simulation": artifacts.simulation.summary if artifacts.simulation else {},
-            "risk": artifacts.risk.summary if artifacts.risk else {},
-            "safety_factor": artifacts.risk.summary.get("min_safety_factor", 0.0) if artifacts.risk else 0.0,
-            "fracture_risk": artifacts.risk.summary.get("risk_category", "unknown") if artifacts.risk else "unknown",
-            "estimated_years_to_failure": artifacts.risk.summary.get("years_to_failure_estimate", 0.0)
-            if artifacts.risk
-            else 0.0,
-            "report_path": str(artifacts.report_path) if artifacts.report_path else "",
-            "visualization_paths": artifacts.visualization_paths,
-        }
-        summary_path.write_text(json.dumps(summary_payload, indent=2), encoding="utf-8")
+        artifacts.write_summary()
         self._emit(progress, "Complete", 1.0)
         return artifacts

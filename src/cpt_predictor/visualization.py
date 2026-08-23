@@ -257,10 +257,18 @@ class ResultVisualizer:
             if hasattr(pv, "system_supports_plotting") and not pv.system_supports_plotting():
                 return {}
             if sys.platform.startswith("linux"):
-                pv.start_xvfb()
+                try:
+                    pv.start_xvfb()
+                except Exception:
+                    pass
             mesh = simulation.mesh
             screenshot_path = output_dir / "stress_map.png"
             html_path = output_dir / "interactive_mesh.html"
+            safety = np.asarray(mesh.cell_data.get("safety_factor", [1.0]), dtype=float)
+            finite_safety = safety[np.isfinite(safety)]
+            vmax = 2.5
+            if finite_safety.size:
+                vmax = float(np.clip(np.nanpercentile(finite_safety, 90), 2.0, 5.0))
 
             plotter = pv.Plotter(off_screen=True)
             plotter.set_background("white")
@@ -268,7 +276,7 @@ class ResultVisualizer:
                 mesh,
                 scalars="safety_factor",
                 cmap="RdYlGn",
-                clim=[0.0, max(2.5, float(np.nanmax(mesh.cell_data.get("safety_factor", [1.0]))))],
+                clim=[0.0, vmax],
                 show_edges=False,
                 scalar_bar_args={"title": "Safety Factor"},
             )

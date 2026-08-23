@@ -9,6 +9,8 @@ import warnings
 from pathlib import Path
 from typing import Optional, Sequence
 
+from .models import to_jsonable
+
 warnings.filterwarnings(
     "ignore",
     message=r".*doesn't match a supported version!$",
@@ -241,7 +243,7 @@ def _resolve_streamlit_inputs(
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    from .agents.crew import PipelineCrewOrchestrator, build_crew_manifest
+    from .agents.crew import build_crew_manifest
     from .pipeline import CPTFracturePipeline
 
     args = build_parser().parse_args(argv)
@@ -263,17 +265,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     print(
         json.dumps(
-            {
-                "risk_category": artifacts.risk.summary.get("risk_category") if artifacts.risk else "unknown",
-                "min_safety_factor": artifacts.risk.summary.get("min_safety_factor") if artifacts.risk else 0.0,
-                "years_to_failure_estimate": artifacts.risk.summary.get("years_to_failure_estimate")
-                if artifacts.risk
-                else 0.0,
-                "simulation_mode": artifacts.risk.summary.get("simulation_mode") if artifacts.risk else "unknown",
-                "leg_localization": artifacts.study.metadata.get("leg_localization", {}) if artifacts.study else {},
-                "report_path": str(artifacts.report_path) if artifacts.report_path else "",
-                "output_dir": str(artifacts.output_dir),
-            },
+            to_jsonable(
+                {
+                    "risk_category": artifacts.risk.summary.get("risk_category") if artifacts.risk else "unknown",
+                    "min_safety_factor": artifacts.risk.summary.get("min_safety_factor") if artifacts.risk else 0.0,
+                    "years_to_failure_estimate": artifacts.risk.summary.get("years_to_failure_estimate")
+                    if artifacts.risk
+                    else 0.0,
+                    "simulation_mode": artifacts.risk.summary.get("simulation_mode") if artifacts.risk else "unknown",
+                    "leg_localization": artifacts.study.metadata.get("leg_localization", {}) if artifacts.study else {},
+                    "report_path": str(artifacts.report_path) if artifacts.report_path else "",
+                    "output_dir": str(artifacts.output_dir),
+                }
+            ),
             indent=2,
         )
     )
@@ -322,7 +326,7 @@ def run_streamlit_app() -> None:
     dicom_files = st.file_uploader(
         "Or upload DICOM slices",
         accept_multiple_files=True,
-        type=["dcm"],
+        type=["dcm", "dicom", "ima"],
         disabled=use_bundled_demo,
     )
     brace_file = st.file_uploader("Optional brace STL", type=["stl"], disabled=use_bundled_demo)

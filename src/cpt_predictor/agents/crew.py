@@ -183,6 +183,7 @@ class PipelineCrewOrchestrator:
             self.pipeline.output_dir,
         )
         artifacts.report_path = PDFReportBuilder(self.pipeline.config).build(artifacts)
+        artifacts.write_summary()
 
         self._emit("ProjectManagerAgent", "Workflow complete", 1.0, progress)
         return artifacts
