@@ -179,19 +179,19 @@ class FEBioRunner:
         mesh.cell_data["safety_factor"] = safety_factor
         mesh.cell_data["fatigue_cycles"] = fatigue_cycles
 
+        derived = {
+            "max_von_mises_mpa": float(np.max(von_mises)) if von_mises.size else 0.0,
+            "min_safety_factor": float(np.min(safety_factor)) if safety_factor.size else float("inf"),
+            "min_fatigue_cycles": float(np.min(fatigue_cycles)) if fatigue_cycles.size else float("inf"),
+        }
+        derived = self._finalize_clinical_fields(mesh, derived)
+
         mesh_path = output_dir / "simulation_mesh.vtu"
         mesh.save(mesh_path)
-
-        steps_per_day = max(1.0, float(self.config["patient"].get("steps_per_day", 6000)))
-        min_cycles = float(np.min(fatigue_cycles)) if fatigue_cycles.size else float("inf")
-        years_to_failure = float(min_cycles / (steps_per_day * 365.0)) if np.isfinite(min_cycles) else float("inf")
         peak_phase = febio_setup.load_summary.get("peak_phase", {})
         summary = {
             "mode": "febio_results_vtk",
-            "max_von_mises_mpa": float(np.max(von_mises)) if von_mises.size else 0.0,
-            "min_safety_factor": float(np.min(safety_factor)) if safety_factor.size else float("inf"),
-            "min_fatigue_cycles": min_cycles,
-            "years_to_failure_estimate": max(0.0, years_to_failure) if np.isfinite(years_to_failure) else float("inf"),
+            **derived,
             "governing_phase": str(peak_phase.get("name", "peak_load_case")),
             "result_mesh_source": "febio_vtk",
             "vtk_result_path": str(vtk_path) if vtk_path else "",
@@ -218,6 +218,25 @@ class FEBioRunner:
         vtk_path = self._find_latest_vtk_result(febio_setup, output_dir)
         vtk_mesh = pv.read(vtk_path)
         return self._build_febio_result_from_mesh(vtk_mesh, material_result, febio_setup, output_dir, vtk_path=vtk_path)
+
+    def _finalize_clinical_fields(self, mesh: Any, derived: Dict[str, Any]) -> Dict[str, Any]:
+        from .risk_map import attach_clinical_risk_fields, clinical_summary
+
+        assessment = attach_clinical_risk_fields(mesh)
+        extra = clinical_summary(mesh, assessment)
+        steps_per_day = max(1.0, float(self.config["patient"].get("steps_per_day", 6000)))
+        min_cycles = float(extra["min_clinical_fatigue_cycles"])
+        years_to_failure = float(min_cycles / (steps_per_day * 365.0)) if np.isfinite(min_cycles) else float("inf")
+        merged = dict(derived)
+        merged["min_safety_factor"] = float(extra["min_clinical_safety_factor"])
+        merged["min_fatigue_cycles"] = min_cycles
+        merged["years_to_failure_estimate"] = max(0.0, years_to_failure) if np.isfinite(years_to_failure) else float("inf")
+        merged["max_clinical_utilization"] = float(extra["max_clinical_utilization"])
+        merged["has_structural_defect"] = bool(extra["has_structural_defect"])
+        merged["defect_reason"] = extra["defect_reason"]
+        merged["defect_z_mm"] = extra["defect_z_mm"]
+        merged["overlay_caption"] = extra["overlay_caption"]
+        return merged
 
     def _attach_derived_fields(self, mesh: Any, von_mises: np.ndarray, principal_strain: np.ndarray) -> Dict[str, Any]:
         n_cells = int(getattr(mesh, "n_cells", von_mises.size))
@@ -248,15 +267,12 @@ class FEBioRunner:
         mesh.cell_data["safety_factor"] = safety_factor
         mesh.cell_data["fatigue_cycles"] = fatigue_cycles
 
-        steps_per_day = max(1.0, float(self.config["patient"].get("steps_per_day", 6000)))
-        min_cycles = float(np.min(fatigue_cycles)) if fatigue_cycles.size else float("inf")
-        years_to_failure = float(min_cycles / (steps_per_day * 365.0)) if np.isfinite(min_cycles) else float("inf")
-        return {
+        derived = {
             "max_von_mises_mpa": float(np.max(von_mises)) if von_mises.size else 0.0,
             "min_safety_factor": float(np.min(safety_factor)) if safety_factor.size else float("inf"),
-            "min_fatigue_cycles": min_cycles,
-            "years_to_failure_estimate": max(0.0, years_to_failure) if np.isfinite(years_to_failure) else float("inf"),
+            "min_fatigue_cycles": float(np.min(fatigue_cycles)) if fatigue_cycles.size else float("inf"),
         }
+        return self._finalize_clinical_fields(mesh, derived)
 
     def _run_linear_tet_fea(
         self,

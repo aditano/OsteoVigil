@@ -118,9 +118,6 @@ class ResultVisualizer:
         stress = np.asarray(stress, dtype=float)
         centers = np.asarray(centers, dtype=float)
         finite = np.isfinite(stress)
-        if not finite.any():
-            stress = np.zeros_like(stress)
-            finite = np.ones_like(stress, dtype=bool)
         stress = np.where(finite, stress, np.nan)
 
         mask = None
@@ -237,7 +234,25 @@ class ResultVisualizer:
             "lateral_extent": np.asarray(lat_extent, dtype=float),
         }
 
-    def _plot_bone_view(self, ax, image: np.ndarray, hu: np.ndarray, extent, title: str, x_label: str, vmin: float, vmax: float, hotspot_xy=None, weakest_xy=None):
+    def _plot_bone_view(
+        self,
+        ax,
+        image: np.ndarray,
+        hu: np.ndarray,
+        extent,
+        title: str,
+        x_label: str,
+        vmin: float,
+        vmax: float,
+        hotspot_xy=None,
+        weakest_xy=None,
+        min_visible: float = 0.15,
+    ):
+        from matplotlib.cm import ScalarMappable
+        from matplotlib.colors import Normalize
+
+        from .risk_map import failure_overlay_rgba
+
         ax.set_facecolor("#0b0d10")
         if np.isfinite(hu).any():
             hu_display = np.ma.masked_invalid(hu)
@@ -249,20 +264,18 @@ class ResultVisualizer:
                 aspect="equal",
                 vmin=float(np.nanpercentile(hu, 5)) if np.isfinite(hu).any() else 0.0,
                 vmax=float(np.nanpercentile(hu, 98)) if np.isfinite(hu).any() else 1.0,
-                alpha=0.55,
+                alpha=0.88,
             )
-        stress_display = np.ma.masked_invalid(image)
-        mapped = ax.imshow(
-            stress_display,
+        overlay = failure_overlay_rgba(image, min_visible=min_visible, vmax=max(float(vmax), 1e-6))
+        ax.imshow(
+            overlay,
             origin="lower",
             extent=extent,
-            cmap="inferno",
             aspect="equal",
-            vmin=vmin,
-            vmax=vmax,
             interpolation="nearest",
-            alpha=0.92,
         )
+        mapped = ScalarMappable(norm=Normalize(vmin=0.0, vmax=1.0), cmap="inferno")
+        mapped.set_array([])
         if np.isfinite(hu).any():
             silhouette = np.isfinite(hu).astype(float)
             ax.contour(
@@ -283,7 +296,7 @@ class ResultVisualizer:
                 edgecolors="cyan",
                 linewidths=1.6,
                 marker="o",
-                label="Peak von Mises",
+                label="Likely failure site",
             )
         if weakest_xy is not None:
             ax.scatter(
@@ -294,7 +307,7 @@ class ResultVisualizer:
                 edgecolors="lime",
                 linewidths=1.6,
                 marker="s",
-                label="Lowest safety factor",
+                label="Weakest abnormal tissue",
             )
         ax.set_title(title, color="white")
         ax.set_xlabel(x_label, color="white")
@@ -326,20 +339,41 @@ class ResultVisualizer:
             plt.close(fig)
             return heatmap_path
 
+        from .risk_map import (
+            VISIBLE_UTILIZATION_DEFECT,
+            VISIBLE_UTILIZATION_HEALTHY,
+            attach_clinical_risk_fields,
+        )
+
         if stress.size != centers.shape[0]:
             stress = np.resize(stress, centers.shape[0]) if stress.size else np.zeros(centers.shape[0])
 
-        views = self.project_bone_stress_views(centers, stress, study=study, segmentation=segmentation)
-        finite = stress[np.isfinite(stress)]
-        vmin = float(np.min(finite)) if finite.size else 0.0
-        vmax = float(np.nanpercentile(finite, 99)) if finite.size else 1.0
-        if vmax <= vmin:
-            vmax = vmin + 1.0
-
         cell_data = self._cell_data(mesh)
-        safety = np.asarray(cell_data.get("safety_factor", np.full(centers.shape[0], np.nan)), dtype=float)
+        if "clinical_utilization" not in cell_data:
+            attach_clinical_risk_fields(mesh)
+            cell_data = self._cell_data(mesh)
+        utilization = np.asarray(
+            cell_data.get("clinical_utilization", np.full(centers.shape[0], np.nan)),
+            dtype=float,
+        )
+        if utilization.size != centers.shape[0]:
+            utilization = np.resize(utilization, centers.shape[0]) if utilization.size else np.full(centers.shape[0], np.nan)
+        has_defect = bool(np.asarray(getattr(mesh, "field_data", {}).get("has_structural_defect", [0])).reshape(-1)[0]) if hasattr(mesh, "field_data") else np.isfinite(utilization).any()
+        min_visible = VISIBLE_UTILIZATION_DEFECT if has_defect else VISIBLE_UTILIZATION_HEALTHY
+
+        views = self.project_bone_stress_views(centers, utilization, study=study, segmentation=segmentation)
+        vmin, vmax = 0.0, 1.0
+
+        safety = np.asarray(cell_data.get("clinical_safety_factor", np.full(centers.shape[0], np.nan)), dtype=float)
         modulus = np.asarray(cell_data.get("youngs_modulus_mpa", np.full(centers.shape[0], np.nan)), dtype=float)
-        hotspot_index, weakest_index = self.select_interior_extrema(centers, stress, safety=safety, modulus=modulus)
+        hotspot_index, weakest_index = self.select_interior_extrema(
+            centers,
+            np.nan_to_num(utilization, nan=-1.0),
+            safety=safety,
+            modulus=modulus,
+        )
+        hotspot_util = float(utilization[hotspot_index]) if np.isfinite(utilization[hotspot_index]) else float("nan")
+        weakest_util = float(utilization[weakest_index]) if np.isfinite(utilization[weakest_index]) else float("nan")
 
         fig, axes = plt.subplots(1, 2, figsize=(9.2, 10.5), facecolor="#111318")
         image = None
@@ -347,9 +381,11 @@ class ResultVisualizer:
             (axes[0], views["ap"], views["ap_hu"], views["ap_extent"], "AP view", "Medial–lateral (mm)", 0),
             (axes[1], views["lateral"], views["lateral_hu"], views["lateral_extent"], "Lateral view", "Anterior–posterior (mm)", 1),
         )
+        show_legend = False
         for ax, image_2d, hu_2d, extent, title, x_label, axis in specs:
-            hotspot_xy = (float(centers[hotspot_index, axis]), float(centers[hotspot_index, 2]))
-            weakest_xy = (float(centers[weakest_index, axis]), float(centers[weakest_index, 2]))
+            hotspot_xy = (float(centers[hotspot_index, axis]), float(centers[hotspot_index, 2])) if hotspot_util >= min_visible else None
+            weakest_xy = (float(centers[weakest_index, axis]), float(centers[weakest_index, 2])) if weakest_util >= min_visible else None
+            show_legend = show_legend or hotspot_xy is not None or weakest_xy is not None
             image = self._plot_bone_view(
                 ax,
                 image_2d,
@@ -361,12 +397,19 @@ class ResultVisualizer:
                 vmax,
                 hotspot_xy=hotspot_xy,
                 weakest_xy=weakest_xy,
+                min_visible=min_visible,
             )
-        axes[0].legend(loc="upper right", frameon=True, fontsize=8)
-        fig.suptitle("Bone stress map  ·  AP and lateral", color="white", fontsize=14, fontweight="bold")
+        if show_legend:
+            axes[0].legend(loc="upper right", frameon=True, fontsize=8)
+        caption = (
+            "Fracture-risk map  ·  AP and lateral"
+            if has_defect
+            else "Healthy-appearing bone  ·  heat only if cortex approaches yield"
+        )
+        fig.suptitle(caption, color="white", fontsize=14, fontweight="bold")
         fig.subplots_adjust(top=0.90, bottom=0.08, wspace=0.18, right=0.86)
         cbar = fig.colorbar(image, ax=axes, fraction=0.046, pad=0.04)
-        cbar.set_label("Von Mises stress (MPa)", color="white")
+        cbar.set_label("Closeness to failure (1 = yield)", color="white")
         cbar.ax.yaxis.set_tick_params(color="white")
         plt.setp(cbar.ax.yaxis.get_ticklabels(), color="white")
         fig.savefig(heatmap_path, dpi=200, bbox_inches="tight", facecolor=fig.get_facecolor())
@@ -420,7 +463,7 @@ class ResultVisualizer:
                     0.5,
                     0.42,
                     "PyVista rendering is skipped here to avoid AppKit window creation\n"
-                    "from a background thread. The 2D stress map and report still render normally.",
+                    "from a background thread. The 2D fracture-risk map and report still render normally.",
                     ha="center",
                     va="center",
                     fontsize=11,
@@ -442,24 +485,34 @@ class ResultVisualizer:
             mesh = simulation.mesh
             screenshot_path = output_dir / "stress_map.png"
             html_path = output_dir / "interactive_mesh.html"
-            cell_data = self._cell_data(mesh)
-            stress = np.asarray(cell_data.get("von_mises_mpa", np.zeros(getattr(mesh, "n_cells", 1))), dtype=float)
-            finite = stress[np.isfinite(stress)]
-            vmax = float(np.nanpercentile(finite, 99)) if finite.size else 1.0
-            vmin = 0.0
-            scalar_name = "von_mises_mpa" if "von_mises_mpa" in cell_data else None
+            from .risk_map import attach_clinical_risk_fields
 
+            cell_data = self._cell_data(mesh)
+            if "clinical_utilization" not in cell_data:
+                attach_clinical_risk_fields(mesh)
+                cell_data = self._cell_data(mesh)
+            utilization = np.asarray(
+                cell_data.get("clinical_utilization", np.zeros(getattr(mesh, "n_cells", 1))),
+                dtype=float,
+            )
             plotter = pv.Plotter(off_screen=True)
             plotter.set_background("white")
-            plotter.add_mesh(
-                mesh,
-                scalars=scalar_name,
-                cmap="inferno",
-                clim=[vmin, max(vmax, vmin + 1e-3)],
-                show_edges=False,
-                scalar_bar_args={"title": "Von Mises (MPa)"},
-            )
-            plotter.add_text("OsteoVigil bone stress map", position="upper_left", font_size=12, color="black")
+            plotter.add_mesh(mesh, color="#c8c8c8", opacity=0.35, show_edges=False)
+            visible = np.nan_to_num(utilization, nan=0.0)
+            if visible.size == getattr(mesh, "n_cells", 0) and float(np.max(visible)) >= 0.15:
+                overlay_mesh = mesh.copy()
+                overlay_mesh.cell_data["clinical_utilization"] = visible
+                overlay_mesh = overlay_mesh.threshold(0.15, scalars="clinical_utilization")
+                if getattr(overlay_mesh, "n_cells", 0):
+                    plotter.add_mesh(
+                        overlay_mesh,
+                        scalars="clinical_utilization",
+                        cmap="inferno",
+                        clim=[0.15, 1.0],
+                        show_edges=False,
+                        scalar_bar_args={"title": "Closeness to failure (1 = yield)"},
+                    )
+            plotter.add_text("OsteoVigil fracture-risk map", position="upper_left", font_size=12, color="black")
             plotter.show(screenshot=str(screenshot_path), auto_close=False)
 
             try:

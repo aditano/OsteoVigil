@@ -456,8 +456,8 @@ def run_streamlit_app() -> None:
 
     visualization_paths = last_run.get("visualization_paths", {})
     visualization_captions = {
-        "stress_heatmap_2d": "Stress Heatmaps (AP and Lateral Views)",
-        "stress_map": "3D Stress Map",
+        "stress_heatmap_2d": "Fracture-risk maps (AP and lateral)",
+        "stress_map": "3D fracture-risk map",
         "risk_dashboard": "Risk Dashboard",
     }
     for key in ("stress_heatmap_2d", "stress_map", "risk_dashboard"):

@@ -78,3 +78,17 @@ def test_interior_extrema_ignore_boundary_condition_bands():
     assert hotspot == 50
     assert weakest == 50 or 0.12 < (z[weakest] / 100.0) < 0.88
     assert z[weakest] != z[2]
+
+
+def test_failure_overlay_does_not_stretch_healthy_utilization():
+    from cpt_predictor.risk_map import failure_overlay_rgba
+
+    healthy = np.full((12, 8), 0.12)
+    rgba = failure_overlay_rgba(healthy, min_visible=0.33)
+    assert float(rgba[..., 3].max()) == 0.0
+
+    defect = np.full((12, 8), np.nan)
+    defect[4:8, 2:6] = 0.95
+    rgba_defect = failure_overlay_rgba(defect, min_visible=0.15)
+    assert float(rgba_defect[..., 3].max()) > 0.7
+    assert float(np.nan_to_num(rgba_defect[..., 3])[0, 0]) == 0.0

@@ -981,7 +981,7 @@ class MainWindow(QMainWindow):
 
         # ── Output images ────────────────────────────────────────────────
         for img_path, caption in [
-            (stress_path, "Stress Map"),
+            (stress_path, "Fracture-risk map"),
             (dashboard_path, "Risk Dashboard"),
         ]:
             if img_path and os.path.isfile(str(img_path)):
