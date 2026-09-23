@@ -58,7 +58,7 @@ class PDFReportBuilder:
         table_data = [
             ["Metric", "Value"],
             ["Risk category", str(risk.get("risk_category", "unknown")).title()],
-            ["Peak von Mises stress (MPa)", f"{risk.get('max_von_mises_mpa', 0.0):.2f}"],
+            ["Peak closeness to failure (1 = yield)", f"{risk.get('max_clinical_utilization', 0.0):.2f}"],
             ["Minimum safety factor", f"{risk.get('min_safety_factor', 0.0):.2f}"],
             ["Estimated years to failure", f"{risk.get('years_to_failure_estimate', 0.0):.2f}"],
             ["Governing gait phase", str(risk.get("governing_phase", "unknown"))],
@@ -86,8 +86,8 @@ class PDFReportBuilder:
                 story.append(Paragraph(f"- {recommendation}", styles["BodyText"]))
 
         image_specs = (
-            ("stress_heatmap_2d", "Stress Heatmaps (AP and Lateral Views)"),
-            ("stress_map", "3D Stress Map"),
+            ("stress_heatmap_2d", "Fracture-risk maps (AP and lateral)"),
+            ("stress_map", "3D fracture-risk map"),
             ("risk_dashboard", "Risk Dashboard"),
         )
         for image_key, caption in image_specs:

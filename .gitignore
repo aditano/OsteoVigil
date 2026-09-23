@@ -12,3 +12,5 @@ dist/
 build/
 *.egg-info/
 /tmp/
+data/external/
+data/downloaded/

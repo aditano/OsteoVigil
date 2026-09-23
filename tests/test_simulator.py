@@ -15,7 +15,8 @@ def _config() -> dict:
         "simulation": {
             "prefer_febio": True,
             "febio_exe": None,
-            "surrogate_if_febio_unavailable": True,
+            "internal_fea_if_febio_unavailable": True,
+            "surrogate_if_febio_unavailable": False,
             "fatigue_constant": 500000.0,
             "fatigue_exponent": 7.5,
         },
@@ -105,13 +106,13 @@ def test_run_marks_successful_febio_completion_without_plain_surrogate_mode(
         return Completed()
 
     monkeypatch.setattr("cpt_predictor.simulator.subprocess.run", fake_run)
-    surrogate_called = {"value": False}
+    fea_called = {"value": False}
 
-    def fake_surrogate(*args, **kwargs):
-        surrogate_called["value"] = True
-        raise AssertionError("surrogate path should not be used on successful FEBio import")
+    def fake_fea(*args, **kwargs):
+        fea_called["value"] = True
+        raise AssertionError("internal FEA path should not be used on successful FEBio import")
 
-    monkeypatch.setattr(runner, "_run_surrogate", fake_surrogate)
+    monkeypatch.setattr(runner, "_run_linear_tet_fea", fake_fea)
 
     expected_result = SimulationResult(
         mode="febio_results_vtk",
@@ -132,13 +133,14 @@ def test_run_marks_successful_febio_completion_without_plain_surrogate_mode(
     )
 
     assert captured["command"] == ["/tmp/febio4", "-i", "model.feb"]
-    assert surrogate_called["value"] is False
+    assert fea_called["value"] is False
     assert result.mode == "febio_results_vtk"
     assert result.summary["mode"] == "febio_results_vtk"
     assert result.summary["febio_return_code"] == 0
+    assert not result.mode.startswith("surrogate")
 
 
-def test_run_marks_febio_failure_fallback_explicitly(tmp_path: Path, monkeypatch) -> None:
+def test_run_uses_linear_tet_fea_when_febio_fails(tmp_path: Path, monkeypatch) -> None:
     runner = FEBioRunner(_config())
     febio_setup = FEBioSetup(
         feb_path=tmp_path / "model.feb",
@@ -161,12 +163,12 @@ def test_run_marks_febio_failure_fallback_explicitly(tmp_path: Path, monkeypatch
     monkeypatch.setattr("cpt_predictor.simulator.subprocess.run", fake_run)
 
     expected_result = SimulationResult(
-        mode="surrogate",
+        mode="linear_tet_fea",
         mesh=SimpleNamespace(cell_data={}, n_cells=0),
         mesh_path=tmp_path / "simulation_mesh.vtu",
-        summary={"mode": "surrogate", "years_to_failure_estimate": 1.0},
+        summary={"mode": "linear_tet_fea", "years_to_failure_estimate": 1.0, "engine": "linear_tetrahedron_fea"},
     )
-    monkeypatch.setattr(runner, "_run_surrogate", lambda *args, **kwargs: expected_result)
+    monkeypatch.setattr(runner, "_run_linear_tet_fea", lambda *args, **kwargs: expected_result)
 
     material_result = SimpleNamespace(mesh=SimpleNamespace(), mesh_path=tmp_path / "mesh.vtu")
     result = runner.run(
@@ -178,9 +180,39 @@ def test_run_marks_febio_failure_fallback_explicitly(tmp_path: Path, monkeypatch
         output_dir=tmp_path,
     )
 
-    assert result.mode == "surrogate_febio_failed"
-    assert result.summary["mode"] == "surrogate_febio_failed"
+    assert result.mode == "linear_tet_fea_after_febio_failure"
+    assert result.summary["mode"] == "linear_tet_fea_after_febio_failure"
+    assert result.summary["engine"] == "linear_tetrahedron_fea"
     assert result.summary["febio_return_code"] == 7
+    assert "surrogate" not in result.mode
+
+
+def test_run_uses_linear_tet_fea_when_febio_is_missing(tmp_path: Path, monkeypatch) -> None:
+    runner = FEBioRunner(_config())
+    febio_setup = FEBioSetup(
+        feb_path=tmp_path / "model.feb",
+        manifest_path=tmp_path / "simulation_manifest.json",
+        node_sets={},
+        load_summary={},
+    )
+    monkeypatch.setattr(runner, "_resolve_febio_executable", lambda: None)
+    expected_result = SimulationResult(
+        mode="linear_tet_fea",
+        mesh=SimpleNamespace(cell_data={}, n_cells=0),
+        mesh_path=tmp_path / "simulation_mesh.vtu",
+        summary={"mode": "linear_tet_fea", "engine": "linear_tetrahedron_fea"},
+    )
+    monkeypatch.setattr(runner, "_run_linear_tet_fea", lambda *args, **kwargs: expected_result)
+    result = runner.run(
+        febio_setup,
+        study=SimpleNamespace(),
+        segmentation=SimpleNamespace(),
+        material_result=SimpleNamespace(mesh=SimpleNamespace()),
+        brace=SimpleNamespace(),
+        output_dir=tmp_path,
+    )
+    assert result.mode == "linear_tet_fea"
+    assert result.summary["engine"] == "linear_tetrahedron_fea"
 
 
 def test_build_febio_result_from_mesh_normalizes_real_febio_fields(tmp_path: Path) -> None:
