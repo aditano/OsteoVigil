@@ -1,16 +1,44 @@
 # OsteoVigil Project Status
 
-Last updated: 2026-03-24
+Last updated: 2026-09-23
+
+## Current product
+
+The primary path is a local website for tib/fib vertical-load strength. `python bootstrap.py` builds `web/` and serves it at http://127.0.0.1:8765 . FastAPI in `src/cpt_predictor/api.py` accepts a DICOM series or zip at `POST /api/analyze`.
+
+- Modality comes from the DICOM `Modality` tag and SOP Class UID (`src/cpt_predictor/modality.py`).
+- CT uses the voxel hexahedral solver in `src/cpt_predictor/voxel_fea.py`. Distal nodes are fixed. Proximal force equals body weight. Failure load is that force times the multiplier at which 2% of interior cortical voxels exceed yield. The website does not call the legacy surrogate or treat a missing FEBio install as success.
+- Trabecular modulus is Morgan et al. 2003, `E = 6850 * rho_app^1.49` MPa. A cortical branch blends in so about 1200–1800 HU maps near 12–18 GPa (`src/cpt_predictor/materials.py`). Uncalibrated clinical CT is labeled on the page. The percent uses the same law on both legs.
+- The normal leg is generated in `src/cpt_predictor/reference_leg.py` from adult midshaft proportions and scaled to the scanned length. Percent weaker is `100 * (1 - F_patient / F_reference)`.
+- Walking text uses Bergmann et al. 2014 (OrthoLoad): 2.8× body weight for level walking and 4.0× body weight for stairs and other high daily loads (`src/cpt_predictor/comparison.py`).
+- MRI (`src/cpt_predictor/mri_geometry.py`) segments the dark cortical ring and solves it at a uniform 17 GPa. The percent is geometric stiffness. A failed segmentation returns an error.
+- Radiographs (`src/cpt_predictor/radiograph.py`) use cortical index. One view assumes a circular cross-section and says so.
+- Weakness maps are AP and lateral maximum-intensity projections. WebGPU builds them in the browser when it is available. `web/src/project.ts` is the CPU fallback and the GPU check.
+- The page states: "Research biomechanical estimate. This is not a diagnosis, not a medical device, and not a clearance to walk."
+
+The legacy CPT CLI, Streamlit UI, desktop app, and FEBio export remain. Launch them with `bootstrap.py --entrypoint cli|streamlit|desktop`.
+
+## Verified on 2026-09-23
+
+`PYTHONPATH=src python -m pytest tests/test_strength_core.py tests/test_strength_evidence.py tests/test_strength_browser.py` passed, along with the rest of the suite that can import in this environment (44 passed). `tests/test_visualization.py`, `tests/test_pipeline_smoke.py`, and `tests/test_risk_map.py` still need matplotlib, which was not installed here.
+
+Checked behavior:
+
+- A uniform cortical cylinder matches `EA/L` within 5%.
+- Lower HU lowers the failure load in line with the yield ratio.
+- A reference phantom matches itself, keeps a separate fibula, and does not mark a noise hotspot.
+- A shaft notch is weaker, and both AP and lateral projections peak within 6 mm of the notch.
+- CT, MR, DX, and CR headers route to the right analysis.
+- A synthetic MRI of the reference cortex matches the normal leg. Random noise raises `StrengthAnalysisError`.
+- A thin-cortex radiograph is weaker than the reference DRR, and a single view says the section is assumed circular.
+- `data/demo/abnormal_synthetic_cpt` fails at a lower load than a repaired copy, with the hotspot on the low-density band (about 116 mm versus 115 mm expected).
+- `data/demo/normal_real_talocrural` (CC0, Zenodo 10.5281/zenodo.4274217, 325 slices) finished in `voxel_hexahedral_cg`. Failure load was 1522 N, 2.22× body weight at 70 kg, 98.3% weaker than a normal shaft segment of the same 102.5 mm length, tibia 6206 voxels, fibula not separated because the ankle is one component. The field note says the scan is distal and not a full tibial shaft. That percent is the shaft-segment comparison the page describes; it is not a claim that a normal ankle cannot walk.
+- The browser test uploaded a generated DICOM series and saw modality CT, a numeric percent, both canvases with more than one color, the research banner, and neither "surrogate" nor "demo mode".
+- `scripts/download_full_limb_ct.py` read Zenodo 10.5281/zenodo.8270365. After ignoring sub-megabyte placeholders, the smallest CT archive is about 650 MB, so the decision is `skip-too-large`. Nothing from that record was downloaded or committed.
 
 ## Purpose
 
-This file is the living handoff/status document for the `OsteoVigil` project. It explains:
-
-- what has been built
-- what has been verified
-- what still needs to be done
-- what to run next
-- where the important code lives
+This file is the living handoff/status document for the `OsteoVigil` project. The historical log below records the older CPT pipeline. The current product is the strength site above.
 
 ## Usage / Distribution Intent
 
@@ -247,17 +275,15 @@ PYTHONPYCACHEPREFIX=/tmp/osteovigil_pycache python3 -m compileall src tests main
 
 ## Current State
 
-The codebase is scaffolded and integrated, and the project is ready for real local runtime setup. The biggest gap is not architecture anymore; it is runtime validation with the actual dependency stack and solver.
+The strength site is the default entrypoint. Analytical, synthetic-defect, CC0 distal-CT, API, and browser checks passed on 2026-09-23. The legacy CPT pipeline is unchanged aside from the shared cortical modulus blend.
 
 ## What Needs To Be Done Next
 
 ### Immediate next steps
 
-1. Run `python bootstrap.py` on a machine with Python 3.11 or 3.12.
-2. Confirm the bootstrap path installs pinned Python dependencies and attempts the managed FEBio install.
-3. Run `pytest`.
-4. Run a demo pipeline using synthetic data.
-5. Run the Streamlit UI and verify the basic user workflow.
+1. Run `python bootstrap.py` on a machine with Python 3.11+ and Node.js, and open http://127.0.0.1:8765 .
+2. Phantom-calibrate clinical CT before treating absolute newtons as more than a same-law comparison.
+3. Add a distal-metaphysis reference if ankle-only studies should be compared with an ankle rather than a short shaft segment.
 
 ### Simulation validation
 

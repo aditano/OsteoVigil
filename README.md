@@ -1,8 +1,92 @@
-# === CPT FRACTURE PREDICTION SYSTEM - FULL PROJECT OUTLINE ===
+# OsteoVigil
 
-`OsteoVigil` is an open-source Python application for lower-leg CT loading, tibial segmentation, tetrahedral mesh generation, density-to-material mapping, FEBio model export, FEBio-or-linear-tetrahedral-FEA simulation, fracture-risk analysis, and clinician-friendly reporting for congenital pseudarthrosis of the tibia (CPT) in a brace-assisted patient workflow.
+OsteoVigil estimates how a tibia and fibula carry a vertical load, compared with a normal leg.
 
-The app now supports both dedicated tibia/fibula scans and larger bilateral or full-body CT studies. When both legs are present, the preprocessing stage can detect that, let the user choose a target leg, and crop the study down to the tib/fib region before the usual analysis pipeline continues.
+Drop a DICOM series, or a zip of one, on the local website. The site classifies the study as CT, MRI, or a radiograph and reports:
+
+- percent weaker or stronger than a normal tib/fib of the same length
+- failure load in newtons and in multiples of body weight
+- whether that estimate covers level walking and ordinary daily loads
+- AP and lateral maps of where the limb is more highly utilized than the normal leg
+
+This is a research biomechanical estimate. It is not a diagnosis, not a medical device, and not a clearance to walk.
+
+The congenital-pseudarthrosis CLI, Streamlit app, desktop app, and FEBio export are still in the repo. The website does not use that path. A missing FEBio install is not a successful strength analysis.
+
+## Run the strength site
+
+From the repo root, with Python 3.11+ and Node.js available:
+
+```bash
+python bootstrap.py
+```
+
+Then open http://127.0.0.1:8765 . Bootstrap creates `.venv`, installs `requirements.txt`, builds `web/`, and starts the site. It does not install FEBio for this entrypoint.
+
+Body mass comes from the DICOM `PatientWeight` tag when that tag is present and the checkbox is on. Otherwise edit the mass field. The field starts at 70 kg and stays visible.
+
+To build and serve it yourself:
+
+```bash
+cd web && npm install && npm run build && cd ..
+PYTHONPATH=src python -m uvicorn cpt_predictor.api:app --app-dir src --host 127.0.0.1 --port 8765
+```
+
+## How the estimate is made
+
+### CT
+
+CT is the quantitative path. Each bone voxel is an 8-node brick in a linear-elastic solve. Distal nodes are fixed. A proximal axial force equal to body weight is applied. Because the model is linear, failure load is that force times the multiplier at which 2% of interior cortical voxels exceed yield. Tibia and fibula stay in one model when the segmenter can separate them.
+
+Material law:
+
+- Trabecular bone follows Morgan et al. 2003: `E = 6850 * rho_app^1.49` MPa, with `rho_ash = max(0.05, 0.000887 * HU + 0.0633)` and `rho_app = clip(1.04 * rho_ash, 0.10, 2.40)`.
+- A cortical branch blends in so roughly 1200–1800 HU lands near 12–18 GPa.
+- Yield strength remains `clip(114.8 * rho_app^1.72, 2, 220)` MPa.
+
+A random clinical CT has no density phantom. Absolute newtons carry that uncertainty, and the page says so. The percent comparison uses the same law on both legs.
+
+### Normal leg
+
+The reference is a deterministic tibia and fibula generated from published adult midshaft proportions: tibial periosteal radius about 13 mm with about 5 mm of cortex, and a narrower fibula offset laterally. Length matches the scanned bone. Percent weaker is `100 * (1 - F_patient / F_reference)`. A stronger limb is reported as percent stronger.
+
+### Walking
+
+Thresholds follow in vivo knee contact forces from Bergmann et al. 2014 (OrthoLoad):
+
+- below 2.8× body weight: not expected to tolerate level walking unassisted
+- from 2.8× up to 4.0× body weight: level walking may be tolerated; stairs and unassisted daily life exceed the estimated margin
+- at or above 4.0× body weight: estimated to tolerate unassisted walking and ordinary daily loads
+
+### MRI
+
+Clinical MRI does not measure bone density. The dark cortical ring is segmented and solved with a uniform cortical modulus of 17 GPa and a yield of 120 MPa. The percent is geometric stiffness versus the normal leg. If the ring cannot be segmented, the page returns that failure and does not invent a percent.
+
+### Radiograph
+
+Cortical index is measured along the shaft from the bone edges. One view assumes a circular cross-section, and the page says so. Two views are combined as an ellipse. The comparison is against a digitally reconstructed radiograph of the reference leg. The weakness map is painted on the acquired view.
+
+### Maps
+
+Weakness is utilization (stress / yield) of the scanned leg minus the normal leg at the same relative height. The AP projection collapses the anteroposterior axis. The lateral projection collapses the mediolateral axis. The browser uploads the volume and a WebGPU compute shader builds those projections when WebGPU is available. The same projection written in TypeScript is the fallback and the check against the GPU result.
+
+## Sample data
+
+- `data/demo/normal_real_talocrural`: CC0 distal tibia/fibula/ankle CT, Zenodo [10.5281/zenodo.4274217](https://doi.org/10.5281/zenodo.4274217), 325 slices. On 2026-09-23 the voxel solve finished with a finite failure load of about 1.5 kN (2.2× body weight at 70 kg) and stated that the field is distal, not a full tibial shaft. The ankle bones stay one connected component, so the fibula is not split out.
+- `data/demo/abnormal_synthetic_cpt`: synthetic series with a low-density shaft band. It fails at a lower load than a repaired copy of the same volume, and the weakness hotspot sits on that band.
+- `scripts/download_full_limb_ct.py` reads the Virtual Skeleton Database mirror, Zenodo [10.5281/zenodo.8270365](https://doi.org/10.5281/zenodo.8270365) (CC BY-NC-SA). The CT archives are about 0.7–2 GB each, above the 400 MB cap, so the script skips them and does not commit a download.
+
+## Tests
+
+```bash
+PYTHONPATH=src python -m pytest tests/test_strength_core.py tests/test_strength_evidence.py tests/test_strength_browser.py
+```
+
+The browser check uses Playwright against installed Google Chrome. The page must show CT, a numeric percent, both view canvases, and the research banner. It must not say surrogate or demo mode.
+
+## Legacy CPT workflow
+
+The sections below describe the older brace-assisted CPT pipeline. Launch it with `python bootstrap.py --entrypoint cli`, `--entrypoint streamlit`, or `--entrypoint desktop`. Those entrypoints still attempt a managed FEBio install. If FEBio is missing, that legacy path solves a linear tetrahedral model of the same mesh. The strength website never treats that as its result.
 
 ## Usage Notice
 
@@ -107,7 +191,7 @@ All tooling is free/open-source.
 | CAD/meshing alternative | `gmsh`, `pygmsh` | `4.13.1`, `7.1.17` |
 | Reporting | `reportlab` | `4.2.2` |
 | Plotting | `matplotlib` | `3.8.4` |
-| GUI | `streamlit` | `1.35.0` |
+| GUI | local website (`fastapi`, `uvicorn`) and legacy `streamlit` | `0.115.6`, `0.34.0`, `1.35.0` |
 | Multi-agent orchestration | `crewai` | `0.41.1` |
 | Config | `PyYAML` | `6.0.1` |
 | Testing | `pytest` | `8.2.2` |
@@ -193,35 +277,25 @@ This installer attempts a repo-local FEBio install under `.third_party/febio/` b
 
 ## How To Run
 
-CLI:
+The default `python bootstrap.py` command opens the strength site described above.
 
-```bash
-python main.py --dummy-data --output-dir outputs/demo_run
-```
-
-Real CT:
-
-```bash
-python main.py --dicom-dir /path/to/dicom_folder --brace-stl /path/to/afo.stl --output-dir outputs/patient_run
-```
-
-Streamlit UI:
-
-```bash
-streamlit run streamlit_app.py
-```
-
-Single-command bootstrap from the repo root:
-
-```bash
-python bootstrap.py
-```
-
-If your default `python` is Python 3.11 or newer, this command now creates `.venv` if needed, installs `requirements.txt`, attempts a managed FEBio install into `.third_party/febio/`, and launches the default UI for your platform. On macOS, the default UI is Streamlit for reliability. You can also target other entrypoints:
+Legacy CLI:
 
 ```bash
 python bootstrap.py --entrypoint cli -- --dummy-data --output-dir outputs/demo_run
+```
+
+Legacy Streamlit UI:
+
+```bash
 python bootstrap.py --entrypoint streamlit
+```
+
+Direct CLI, after dependencies are installed:
+
+```bash
+python main.py --dummy-data --output-dir outputs/demo_run
+python main.py --dicom-dir /path/to/dicom_folder --brace-stl /path/to/afo.stl --output-dir outputs/patient_run
 ```
 
 If your machine has multiple Python versions installed, use a 3.11+ interpreter explicitly:
@@ -230,10 +304,10 @@ If your machine has multiple Python versions installed, use a 3.11+ interpreter 
 python3.11 bootstrap.py
 ```
 
-To force a fresh FEBio install attempt during bootstrap:
+To force a fresh FEBio install during a legacy launch:
 
 ```bash
-python bootstrap.py --force-febio-reinstall
+python bootstrap.py --entrypoint cli --force-febio-reinstall
 ```
 
 Desktop launcher:
@@ -241,18 +315,14 @@ Desktop launcher:
 - macOS: double-click [launch_osteovigil.command](/Users/anthonyditano/Documents/GitHub/OsteoVigil/launch_osteovigil.command)
 - Windows: double-click [launch_osteovigil.bat](/Users/anthonyditano/Documents/GitHub/OsteoVigil/launch_osteovigil.bat)
 
-On first launch, the launcher now delegates to [bootstrap.py](/Users/anthonyditano/Documents/GitHub/OsteoVigil/bootstrap.py), which:
+On first launch, the launcher delegates to `bootstrap.py`, which:
 
 1. creates `.venv` if missing
 2. installs `requirements.txt` into that environment
-3. attempts an automatic FEBio install into `.third_party/febio/`
-4. starts the platform-default UI
+3. builds the website and opens it at http://127.0.0.1:8765
+4. skips FEBio unless you select the legacy `cli`, `streamlit`, or `desktop` entrypoint
 
-macOS note:
-
-- the `.command` launcher now opens the Streamlit interface by default to avoid a PyQt/Qt startup issue affecting some macOS environments
-- the bundled Streamlit config disables file watching and usage-stat collection to reduce noisy macOS permission prompts during startup
-- the PyQt desktop app remains available for manual testing with `python bootstrap.py --entrypoint desktop`
+The PyQt desktop app remains available with `python bootstrap.py --entrypoint desktop`. The Streamlit config still disables file watching and usage-stat collection.
 
 ## Outputs
 

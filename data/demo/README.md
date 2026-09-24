@@ -1,6 +1,8 @@
 # Demo Cases
 
-This folder contains two ready-to-run demo CT studies for `OsteoVigil`.
+This folder contains two CT studies used by the tib/fib strength site and by the legacy CPT pipeline.
+
+The strength site (`python bootstrap.py`, then http://127.0.0.1:8765 ) can open either DICOM folder. The distal scan is a partial field, and the page says so. The synthetic series has a low-density band that scores weaker than a repaired copy of the same volume.
 
 ## Included Cases
 
