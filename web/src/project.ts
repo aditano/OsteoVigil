@@ -192,12 +192,15 @@ export function projectionsAgree(cpu: Float32Array, gpu: Float32Array): boolean 
   return worst < 1e-3;
 }
 
+export type PaintMode = "weakness" | "radiograph";
+
 export function paintProjection(
   canvas: HTMLCanvasElement,
   projection: Projection | null,
   acquired: boolean,
   missingText: string,
   distalAtBottom = true,
+  mode: PaintMode = "weakness",
 ): void {
   const context = canvas.getContext("2d");
   if (!context) {
@@ -216,14 +219,16 @@ export function paintProjection(
   }
   const image = context.createImageData(projection.width, projection.height);
   let peak = 0.05;
-  for (let index = 0; index < projection.values.length; index += 1) {
-    peak = Math.max(peak, projection.values[index]);
+  if (mode === "weakness") {
+    for (let index = 0; index < projection.values.length; index += 1) {
+      peak = Math.max(peak, projection.values[index]);
+    }
   }
   for (let z = 0; z < projection.height; z += 1) {
     const displayRow = distalAtBottom ? projection.height - 1 - z : z;
     for (let x = 0; x < projection.width; x += 1) {
       const value = projection.values[z * projection.width + x];
-      const color = weaknessColor(value, peak);
+      const color = pixelColor(value, peak, mode);
       const offset = (displayRow * projection.width + x) * 4;
       image.data[offset] = color[0];
       image.data[offset + 1] = color[1];
@@ -246,6 +251,19 @@ export function paintProjection(
   context.drawImage(temp, 0, 0, drawWidth, drawHeight);
 }
 
+function pixelColor(value: number, peak: number, mode: PaintMode): [number, number, number] {
+  switch (mode) {
+    case "weakness":
+      return weaknessColor(value, peak);
+    case "radiograph":
+      return radiographColor(value);
+    default: {
+      const neverMode: never = mode;
+      return neverMode;
+    }
+  }
+}
+
 function weaknessColor(value: number, peak: number): [number, number, number] {
   if (value <= 0) {
     return [28, 48, 58];
@@ -255,6 +273,41 @@ function weaknessColor(value: number, peak: number): [number, number, number] {
   const green = Math.round(177 + (32 - 177) * scaled);
   const blue = Math.round(90 + (18 - 90) * scaled);
   return [red, green, blue];
+}
+
+function radiographColor(value: number): [number, number, number] {
+  if (!(value >= 2)) {
+    const gray = Math.round(Math.max(0, Math.min(1, value)) * 255);
+    return [gray, gray, gray];
+  }
+  const shifted = value - 2;
+  const step = Math.max(0, Math.min(10, Math.floor(shifted + 1e-3)));
+  const gray = Math.max(0, Math.min(1, shifted - step));
+  const weakness = (step / 10) * 2 - 1;
+  const level = Math.round(gray * 255);
+  const tint = boneTint(weakness);
+  const mix = 0.58;
+  return [
+    Math.round(level * (1 - mix) + tint[0] * mix),
+    Math.round(level * (1 - mix) + tint[1] * mix),
+    Math.round(level * (1 - mix) + tint[2] * mix),
+  ];
+}
+
+function boneTint(weakness: number): [number, number, number] {
+  if (weakness <= 0) {
+    const towardStronger = -weakness;
+    return [
+      Math.round(232 + (96 - 232) * towardStronger),
+      Math.round(214 + (168 - 214) * towardStronger),
+      Math.round(176 + (142 - 176) * towardStronger),
+    ];
+  }
+  return [
+    Math.round(232 + (154 - 232) * weakness),
+    Math.round(180 + (32 - 180) * weakness),
+    Math.round(90 + (18 - 90) * weakness),
+  ];
 }
 
 type Modality = "ct" | "mri" | "radiograph" | "unknown";

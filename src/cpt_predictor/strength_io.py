@@ -9,8 +9,18 @@ from typing import Any, Iterable
 import numpy as np
 import pydicom
 
+from .dicom_codecs import COMPRESSED_PIXEL_ERROR, register_dicom_codecs
 from .errors import StrengthAnalysisError
 from .modality import ModalityAssessment, classify_header, radiographic_view
+
+register_dicom_codecs()
+
+_UNCOMPRESSED_TRANSFER_SYNTAXES = {
+    "1.2.840.10008.1.2",
+    "1.2.840.10008.1.2.1",
+    "1.2.840.10008.1.2.1.99",
+    "1.2.840.10008.1.2.2",
+}
 
 
 def _datasets_from_files(files: Iterable[Path]) -> list[Any]:
@@ -30,10 +40,25 @@ def _datasets_from_files(files: Iterable[Path]) -> list[Any]:
     return datasets
 
 
+def _transfer_syntax_uid(dataset: Any) -> str:
+    meta = getattr(dataset, "file_meta", None)
+    uid = getattr(meta, "TransferSyntaxUID", None) if meta is not None else None
+    if uid in (None, ""):
+        uid = getattr(dataset, "TransferSyntaxUID", "")
+    return str(uid or "")
+
+
 def _pixel_values(dataset: Any) -> np.ndarray:
     slope = float(getattr(dataset, "RescaleSlope", 1.0) or 1.0)
     intercept = float(getattr(dataset, "RescaleIntercept", 0.0) or 0.0)
-    return dataset.pixel_array.astype(np.float32) * slope + intercept
+    try:
+        pixels = dataset.pixel_array
+    except Exception as exc:
+        syntax = _transfer_syntax_uid(dataset)
+        if syntax and syntax not in _UNCOMPRESSED_TRANSFER_SYNTAXES:
+            raise StrengthAnalysisError(COMPRESSED_PIXEL_ERROR) from exc
+        raise
+    return pixels.astype(np.float32) * slope + intercept
 
 
 def _pixel_spacing(dataset: Any) -> tuple[float, float]:

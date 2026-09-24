@@ -8,6 +8,7 @@ const ENGINE_FILES = [
   "cpt_predictor/__init__.py",
   "cpt_predictor/browser_api.py",
   "cpt_predictor/comparison.py",
+  "cpt_predictor/dicom_codecs.py",
   "cpt_predictor/errors.py",
   "cpt_predictor/materials.py",
   "cpt_predictor/modality.py",

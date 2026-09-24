@@ -187,6 +187,14 @@ def project_reference(length_mm: float, spacing_mm: float, view: str) -> tuple[n
     return image.astype(np.float32), (spacing[0], spacing[2])
 
 
+# Display rasters are one float32 channel.
+# [0, 1] is the windowed radiograph outside bone.
+# Bone is offset by 2: floor(value - 2) / 10 is cortical weakness from stronger to weaker,
+# and the fraction is the windowed radiograph at that pixel.
+BONE_CODE_OFFSET = 2.0
+DISPLAY_MAX_EDGE = 640
+
+
 def _paint(image: np.ndarray, measure: ShaftMeasure, weakness_1d: np.ndarray) -> np.ndarray:
     mask = bone_mask(image)
     painted = np.zeros(np.asarray(image).shape, dtype=np.float32)
@@ -207,6 +215,42 @@ def _paint(image: np.ndarray, measure: ShaftMeasure, weakness_1d: np.ndarray) ->
         for slot, col in enumerate(selected[:count]):
             painted[mask[:, col], col] = np.float32(weakness_1d[slot])
     return painted
+
+
+def _window_image(image: np.ndarray) -> np.ndarray:
+    values = np.asarray(image, dtype=np.float32)
+    finite = np.isfinite(values)
+    shown = np.zeros(values.shape, dtype=np.float32)
+    if not np.any(finite):
+        return shown
+    low, high = np.percentile(values[finite], [1.0, 99.0])
+    span = float(high - low)
+    if span <= 1.0e-6:
+        shown[finite] = 0.5
+        return shown
+    shown[finite] = np.clip((values[finite] - np.float32(low)) / np.float32(span), 0.0, 1.0)
+    return shown
+
+
+def _display_stride(image: np.ndarray, max_edge: int = DISPLAY_MAX_EDGE) -> np.ndarray:
+    height, width = image.shape
+    longest = max(int(height), int(width))
+    if longest <= max_edge:
+        return np.ascontiguousarray(image, dtype=np.float32)
+    step = int(np.ceil(longest / float(max_edge)))
+    return np.ascontiguousarray(image[::step, ::step], dtype=np.float32)
+
+
+def display_raster(image: np.ndarray, measure: ShaftMeasure, weakness_1d: np.ndarray) -> np.ndarray:
+    """Windowed radiograph. Cortical pixels also carry the weakness code above 2."""
+    gray = np.minimum(_window_image(image), np.float32(0.99))
+    overlay = _paint(image, measure, weakness_1d)
+    mask = bone_mask(image)
+    shown = gray.copy()
+    weakness_t = np.clip((overlay + 1.0) * 0.5, 0.0, 1.0)
+    steps = np.rint(weakness_t * 10.0)
+    shown[mask] = (BONE_CODE_OFFSET + steps[mask] + gray[mask]).astype(np.float32)
+    return _display_stride(shown)
 
 
 def analyze_radiographs(
@@ -263,7 +307,7 @@ def analyze_radiographs(
         profile = weakness_1d
         if name != primary_name:
             profile = np.interp(measured[name].relative, primary.relative, weakness_1d)
-        rasters[name] = _paint(image, measured[name], profile)
+        rasters[name] = display_raster(image, measured[name], profile)
 
     hotspot = None
     if weakness_1d.size:

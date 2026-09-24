@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+
 import numpy as np
 import pytest
 
@@ -9,6 +11,7 @@ from cpt_predictor.comparison import project_views, walking_assessment
 from cpt_predictor.errors import StrengthAnalysisError
 from cpt_predictor.materials import apparent_density_g_cm3, youngs_modulus_from_density, yield_strength_from_density
 from cpt_predictor.modality import classify_header
+from cpt_predictor.radiograph import project_reference
 from cpt_predictor.reference_leg import synthetic_tibfib_volume
 from cpt_predictor.segmentation import segment_tibia_and_fibula
 from cpt_predictor.strength_pipeline import analyze_ct_volume, analyze_mri_volume, analyze_radiograph_views, projections_for_report
@@ -149,8 +152,6 @@ def test_mri_geometry_matches_normal_and_noise_is_rejected() -> None:
 
 
 def test_radiograph_of_the_reference_matches_and_thin_cortex_is_weaker() -> None:
-    from cpt_predictor.radiograph import project_reference
-
     image, spacing = project_reference(64, 1.0, "ap")
     normal = analyze_radiograph_views({"ap": (image, spacing)}, 70, {"ap": False})
     assert normal.comparison == "matched"
@@ -163,3 +164,34 @@ def test_radiograph_of_the_reference_matches_and_thin_cortex_is_weaker() -> None
     ap, lateral = project_views(np.zeros((4, 3, 5)))
     assert ap.shape == (4, 5)
     assert lateral.shape == (4, 3)
+
+
+def test_radiograph_rasters_include_the_image_and_cortical_bone() -> None:
+    image, spacing = project_reference(64, 1.0, "ap")
+    lateral, lateral_spacing = project_reference(64, 1.0, "lateral")
+    report = analyze_radiograph_views(
+        {"ap": (image, spacing), "lateral": (lateral, lateral_spacing)},
+        70,
+        {"ap": False, "lateral": False},
+    )
+    assert report.weakness is None
+    assert report.views_acquired == {"ap": True, "lateral": True}
+    payload = report.public_dict()
+    assert "weakness" not in payload
+    for name in ("ap", "lateral"):
+        raster = report.rasters[name]
+        bone = raster >= 2
+        assert float(bone.mean()) > 0.01
+        assert float((~bone).mean()) > 0.01
+        fraction = raster[bone] - np.floor(raster[bone])
+        assert float(np.std(fraction)) > 0.02
+        encoded = base64.b64decode(payload["rasters"][name]["b64"])
+        restored = np.frombuffer(encoded, dtype="<f4").reshape(payload["rasters"][name]["shape"])
+        assert restored.shape == raster.shape
+        assert np.allclose(restored, raster)
+    thin_volume, thin_spacing = synthetic_tibfib_volume(64, 1.0, tibia_cortex_mm=2.0, fibula_cortex_mm=1.2)
+    thin = (np.clip(thin_volume, 0, None).sum(axis=1) * thin_spacing[1]).astype(np.float32)
+    weaker = analyze_radiograph_views({"ap": (thin, (thin_spacing[0], thin_spacing[2]))}, 70, {"ap": False})
+    normal_step = np.floor(report.rasters["ap"][report.rasters["ap"] >= 2] - 2)
+    weak_step = np.floor(weaker.rasters["ap"][weaker.rasters["ap"] >= 2] - 2)
+    assert float(np.median(weak_step)) > float(np.median(normal_step)) + 0.5
