@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OsteoVigil tib/fib strength</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div>
+        <p class="eyebrow">OsteoVigil</p>
+        <h1>Tib/fib vertical load</h1>
+      </div>
+      <p id="banner" class="banner">
+        Research biomechanical estimate. This is not a diagnosis, not a medical device, and not a clearance to walk.
+      </p>
+    </header>
+    <main>
+      <section class="controls">
+        <form id="analyze-form">
+          <label class="drop" id="drop">
+            <input id="files" type="file" multiple accept=".dcm,.dicom,.zip,application/dicom,application/zip" />
+            <span id="drop-label">Drop a DICOM series, or a zip of one.</span>
+          </label>
+          <label class="mass">
+            Body mass
+            <input id="mass" name="body_mass_kg" type="number" min="20" max="300" step="0.1" value="70" required />
+            <span>kg</span>
+          </label>
+          <label class="check">
+            <input id="use-dicom-weight" type="checkbox" checked />
+            Use the weight stored in the DICOM header when it is present.
+          </label>
+          <button id="run" type="submit">Analyze limb</button>
+          <p id="status" class="status">Waiting for a study.</p>
+        </form>
+      </section>
+      <section id="results" class="results" hidden>
+        <p id="modality" class="modality"></p>
+        <p id="percent" class="percent"></p>
+        <dl id="metrics"></dl>
+        <p id="walking" class="walking"></p>
+        <p id="field" class="note"></p>
+        <ul id="assumptions"></ul>
+      </section>
+      <section class="views">
+        <figure>
+          <figcaption>AP <span id="ap-state"></span></figcaption>
+          <canvas id="ap" width="480" height="640"></canvas>
+        </figure>
+        <figure>
+          <figcaption>Lateral <span id="lateral-state"></span></figcaption>
+          <canvas id="lateral" width="480" height="640"></canvas>
+        </figure>
+      </section>
+      <p id="renderer" class="renderer" data-renderer="cpu" data-gpu-match="n/a">Projection renderer: CPU</p>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

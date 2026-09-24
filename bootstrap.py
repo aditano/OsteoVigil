@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -26,9 +27,7 @@ REQ_STAMP = VENV_DIR / ".osteovigil_requirements_installed"
 
 
 def default_entrypoint() -> str:
-    if sys.platform == "darwin":
-        return "streamlit"
-    return "desktop"
+    return "web"
 
 
 def configure_qt_environment(env: dict[str, str]) -> None:
@@ -67,9 +66,9 @@ def configure_streamlit_environment(env: dict[str, str]) -> None:
     env.setdefault("STREAMLIT_CLIENT_TOOLBAR_MODE", "minimal")
 
 
-def run_command(cmd: list[str]) -> None:
+def run_command(cmd: list[str], cwd: Optional[Path] = None) -> None:
     print(f"[bootstrap] Running: {' '.join(cmd)}")
-    subprocess.check_call(cmd, cwd=REPO_ROOT)
+    subprocess.check_call(cmd, cwd=cwd or REPO_ROOT)
 
 
 def ensure_supported_python() -> None:
@@ -130,7 +129,46 @@ def ensure_febio(force_reinstall: bool = False) -> Optional[Path]:
     return febio_exe
 
 
+def ensure_web_build() -> None:
+    web_dir = REPO_ROOT / "web"
+    dist_index = web_dir / "dist" / "index.html"
+    npm = shutil.which("npm")
+    if npm is None:
+        raise SystemExit("npm is required to build the OsteoVigil website.")
+    if not (web_dir / "node_modules").is_dir():
+        run_command([npm, "install"], cwd=web_dir)
+    if _web_sources_newer(web_dir, dist_index):
+        print("[bootstrap] Building the tib/fib strength site...")
+        run_command([npm, "run", "build"], cwd=web_dir)
+
+
+def _web_sources_newer(web_dir: Path, dist_index: Path) -> bool:
+    if not dist_index.is_file():
+        return True
+    built_at = dist_index.stat().st_mtime
+    for path in web_dir.rglob("*"):
+        if "node_modules" in path.parts or "dist" in path.parts:
+            continue
+        if path.is_file() and path.stat().st_mtime > built_at:
+            return True
+    return False
+
+
 def launch_command(entrypoint: str, entry_args: list[str]) -> list[str]:
+    if entrypoint == "web":
+        return [
+            str(VENV_PYTHON),
+            "-m",
+            "uvicorn",
+            "cpt_predictor.api:app",
+            "--app-dir",
+            str(SRC_DIR),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8765",
+            *entry_args,
+        ]
     if entrypoint == "desktop":
         return [str(VENV_PYTHON), str(REPO_ROOT / "desktop_app.py"), *entry_args]
     if entrypoint == "cli":
@@ -181,7 +219,7 @@ def parse_args() -> tuple[str, bool, list[str]]:
     )
     parser.add_argument(
         "--entrypoint",
-        choices=("desktop", "cli", "streamlit"),
+        choices=("web", "desktop", "cli", "streamlit"),
         default=entrypoint_default,
         help="Application entrypoint to launch after bootstrap completes.",
     )
@@ -217,8 +255,14 @@ def main() -> int:
             relaunch.extend(["--", *entry_args])
         os.execv(str(VENV_PYTHON), relaunch)
 
-    febio_exe = ensure_febio(force_reinstall=force_febio_reinstall)
+    febio_exe: Optional[Path] = None
+    if entrypoint == "web":
+        print("[bootstrap] The strength site uses the voxel finite-element solver, so FEBio setup is skipped.")
+        ensure_web_build()
+    else:
+        febio_exe = ensure_febio(force_reinstall=force_febio_reinstall)
     launch_env = os.environ.copy()
+    launch_env["PYTHONPATH"] = str(SRC_DIR) + os.pathsep + launch_env.get("PYTHONPATH", "")
     if febio_exe:
         launch_env["FEBIO_EXE"] = str(febio_exe)
     configure_qt_environment(launch_env)

@@ -222,3 +222,103 @@ class TibiaSegmenter:
         mask_path = output_dir / "tibia_mask.npy"
         np.save(mask_path, mask.astype(np.uint8))
         return SegmentationResult(mask=mask, method=method, stats=stats, mask_path=mask_path)
+
+
+class TibFibMasks:
+    """Tibia and fibula kept as separate bones that still share one structural model."""
+
+    def __init__(self, tibia: np.ndarray, fibula: np.ndarray):
+        self.tibia = np.asarray(tibia, dtype=bool)
+        self.fibula = np.asarray(fibula, dtype=bool)
+        self.combined = self.tibia | self.fibula
+
+    @property
+    def tibia_voxels(self) -> int:
+        return int(self.tibia.sum())
+
+    @property
+    def fibula_voxels(self) -> int:
+        return int(self.fibula.sum())
+
+
+def _component_stats(labeled: np.ndarray, count: int, spacing_z: float) -> list[dict[str, float]]:
+    ndi = _require_scipy()
+    slices = ndi.find_objects(labeled)
+    stats = []
+    counts = np.bincount(labeled.ravel())
+    for label, region in enumerate(slices, start=1):
+        if region is None or label >= counts.size or counts[label] < count:
+            continue
+        z_slice, y_slice, x_slice = region
+        z_extent = int(z_slice.stop - z_slice.start)
+        local = labeled[region] == label
+        yy, xx = np.nonzero(np.any(local, axis=0))
+        if yy.size == 0:
+            continue
+        stats.append(
+            {
+                "label": float(label),
+                "count": float(counts[label]),
+                "z0": float(z_slice.start),
+                "z1": float(z_slice.stop),
+                "z_extent": float(z_extent),
+                "length_mm": float(z_extent * spacing_z),
+                "csa": float(counts[label] / max(z_extent, 1)),
+                "cy": float(yy.mean() + y_slice.start),
+                "cx": float(xx.mean() + x_slice.start),
+            }
+        )
+    return stats
+
+
+def segment_tibia_and_fibula(
+    hu_volume: np.ndarray,
+    spacing_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    bone_threshold_hu: float = 180.0,
+    min_component_voxels: int = 40,
+    min_length_mm: float = 16.0,
+) -> TibFibMasks:
+    """Label the two longest load-bearing bones instead of discarding the fibula.
+
+    A single connected component, which is common when the ankle joint is closed,
+    is returned as tibia with an empty fibula mask.
+    """
+    ndi = _require_scipy()
+    volume = np.asarray(hu_volume)
+    bone = volume >= float(bone_threshold_hu)
+    if bone.size > 100_000:
+        bone = ndi.binary_opening(bone, structure=np.ones((1, 2, 2), dtype=bool))
+    labeled, n_labels = ndi.label(bone)
+    empty = np.zeros(volume.shape, dtype=bool)
+    if n_labels == 0:
+        return TibFibMasks(empty, empty)
+
+    counts = np.bincount(labeled.ravel())
+    keep = counts >= int(min_component_voxels)
+    keep[0] = False
+    labeled = np.where(keep[labeled], labeled, 0)
+    labeled, _n_labels = ndi.label(labeled > 0)
+    candidates = _component_stats(labeled, min_component_voxels, float(spacing_zyx[0]))
+    long_bones = [item for item in candidates if item["length_mm"] >= float(min_length_mm)]
+    pool = long_bones or candidates
+    if not pool:
+        return TibFibMasks(empty, empty)
+
+    pool.sort(key=lambda item: item["csa"], reverse=True)
+    tibia = pool[0]
+    fibula = None
+    tibia_radius = max(float(np.sqrt(tibia["csa"] / np.pi)), 2.0)
+    tibia_span = max(1.0, tibia["z1"] - tibia["z0"])
+    for other in pool[1:]:
+        offset = float(np.hypot(other["cx"] - tibia["cx"], other["cy"] - tibia["cy"]))
+        overlap = min(tibia["z1"], other["z1"]) - max(tibia["z0"], other["z0"])
+        if offset < max(4.0, 0.75 * tibia_radius):
+            continue
+        if overlap < 0.35 * min(tibia_span, max(1.0, other["z1"] - other["z0"])):
+            continue
+        fibula = other
+        break
+
+    tibia_mask = labeled == int(tibia["label"])
+    fibula_mask = labeled == int(fibula["label"]) if fibula is not None else empty
+    return TibFibMasks(tibia_mask, fibula_mask)

@@ -10,6 +10,41 @@ from .models import MaterialResult, MeshResult, StudyData
 
 MATERIAL_BINS = [-500.0, 0.0, 250.0, 750.0, 1250.0, 2000.0]
 
+# Morgan et al. 2003 proximal-tibia trabecular curve, E(MPa) = 6850 * rho_app^1.49.
+# The cortical branch is fit so uncalibrated clinical HU of about 1200 and 1800
+# land near 12 GPa and 18 GPa. Apparent density uses the existing ash line
+# rho_ash = 0.000887*HU + 0.0633. The curves blend from 0.85 to 1.15 g/cm^3.
+_CORTICAL_RHO_REF = 1.173
+_CORTICAL_E_REF_MPA = 12000.0
+_CORTICAL_EXPONENT = 1.049
+
+
+def _smoothstep(values: np.ndarray, edge0: float, edge1: float) -> np.ndarray:
+    span = edge1 - edge0
+    blend = np.clip((values - edge0) / span, 0.0, 1.0)
+    return blend * blend * (3.0 - 2.0 * blend)
+
+
+def apparent_density_g_cm3(hu_values: Any, ash_to_apparent_scale: float = 1.04) -> np.ndarray:
+    hu_array = np.asarray(hu_values, dtype=float)
+    rho_ash = np.maximum(0.05, (0.000887 * hu_array) + 0.0633)
+    return np.clip(rho_ash * float(ash_to_apparent_scale), 0.10, 2.40)
+
+
+def youngs_modulus_from_density(rho_app: Any) -> np.ndarray:
+    rho = np.asarray(rho_app, dtype=float)
+    safe = np.maximum(rho, 1.0e-6)
+    trabecular = 6850.0 * np.power(safe, 1.49)
+    cortical = _CORTICAL_E_REF_MPA * np.power(safe / _CORTICAL_RHO_REF, _CORTICAL_EXPONENT)
+    weight = _smoothstep(rho, 0.85, 1.15)
+    modulus = ((1.0 - weight) * trabecular) + (weight * cortical)
+    return np.clip(modulus, 100.0, 22000.0)
+
+
+def yield_strength_from_density(rho_app: Any) -> np.ndarray:
+    rho = np.maximum(np.asarray(rho_app, dtype=float), 1.0e-6)
+    return np.clip(114.8 * np.power(rho, 1.72), 2.0, 220.0)
+
 
 def hu_to_bone_properties(
     hu_values: Any,
@@ -19,10 +54,9 @@ def hu_to_bone_properties(
     cfg = config or {"materials": {"density_scale_from_ash_to_apparent": 1.04}}
     scale = float(cfg["materials"].get("density_scale_from_ash_to_apparent", 1.04))
 
-    rho_ash = np.maximum(0.05, (0.000887 * hu_array) + 0.0633)
-    rho_app = np.clip(rho_ash * scale, 0.10, 2.40)
-    youngs_modulus = np.clip(6850.0 * np.power(rho_app, 1.49), 100.0, 25000.0)
-    yield_strength = np.clip(114.8 * np.power(rho_app, 1.72), 2.0, 220.0)
+    rho_app = apparent_density_g_cm3(hu_array, scale)
+    youngs_modulus = youngs_modulus_from_density(rho_app)
+    yield_strength = yield_strength_from_density(rho_app)
     if np.isscalar(hu_values) or hu_array.shape == ():
         return {
             "density_g_cm3": float(rho_app),

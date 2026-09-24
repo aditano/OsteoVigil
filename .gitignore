@@ -9,6 +9,7 @@ venv/
 .third_party/
 outputs/
 dist/
+node_modules/
 build/
 *.egg-info/
 /tmp/

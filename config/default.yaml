@@ -51,7 +51,7 @@ meshing:
 materials:
   poisson_ratio: 0.30
   density_equation: rho_ash = max(0.05, 0.000887 * HU + 0.0633)
-  modulus_equation: E_MPa = clip(6850 * rho_app^1.49, 100, 25000)
+  modulus_equation: trabecular Morgan 2003 E=6850*rho^1.49 blended to a cortical branch (HU 1200-1800 ~ 12-18 GPa)
   strength_equation: sigma_y_MPa = clip(114.8 * rho_app^1.72, 2, 220)
   density_scale_from_ash_to_apparent: 1.04
   material_bins: 6
