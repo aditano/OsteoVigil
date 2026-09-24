@@ -4,7 +4,7 @@ Last updated: 2026-09-23
 
 ## Current product
 
-The primary path is a tib/fib vertical-load strength page. `python bootstrap.py` builds `web/` and serves it at http://127.0.0.1:8765 . The same page is published at https://aditano.github.io/OsteoVigil/ and runs the Python solver in the browser with Pyodide, so the DICOM stays on the visitor's computer. FastAPI in `src/cpt_predictor/api.py` accepts a DICOM series or zip at `POST /api/analyze` when the local server is running.
+The primary path is a tib/fib vertical-load strength page. `python bootstrap.py` builds `web/` and serves it at http://127.0.0.1:8765 . GitHub Actions is set up to publish the same page at https://aditano.github.io/OsteoVigil/ once Pages is set to deploy from GitHub Actions. That build runs the Python solver in the browser with Pyodide, so the DICOM stays on the visitor's computer. FastAPI in `src/cpt_predictor/api.py` accepts a DICOM series or zip at `POST /api/analyze` when the local server is running.
 
 - Modality comes from the DICOM `Modality` tag and SOP Class UID (`src/cpt_predictor/modality.py`).
 - CT uses the voxel hexahedral solver in `src/cpt_predictor/voxel_fea.py`. Distal nodes are fixed. Proximal force equals body weight. Failure load is that force times the multiplier at which 2% of interior cortical voxels exceed yield. The website does not call the legacy surrogate or treat a missing FEBio install as success.

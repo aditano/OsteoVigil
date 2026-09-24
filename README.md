@@ -23,7 +23,7 @@ python bootstrap.py
 
 Then open http://127.0.0.1:8765 . Bootstrap creates `.venv`, installs `requirements.txt`, builds `web/`, and starts the site. It skips the FEBio install for this entrypoint.
 
-The same page is published at https://aditano.github.io/OsteoVigil/ . That build runs this Python solver in the browser with Pyodide. The DICOM stays on the computer that opened the page. GitHub Actions deploys it from `main` (`.github/workflows/pages.yml`).
+GitHub Actions deploys the same page to https://aditano.github.io/OsteoVigil/ from `main` (`.github/workflows/pages.yml`). In the repository settings, set Pages to deploy from GitHub Actions: https://github.com/aditano/OsteoVigil/settings/pages . That build runs this Python solver in the browser with Pyodide. The DICOM stays on the computer that opened the page.
 
 Body mass comes from the DICOM `PatientWeight` tag when that tag is present and the checkbox is on. Otherwise edit the mass field. The field starts at 70 kg and stays visible.
 
