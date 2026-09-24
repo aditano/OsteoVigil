@@ -1,3 +1,5 @@
+import { decodeDicomFrame, prepareDicomDecoders } from "./dicomDecode";
+
 type StrengthPayload = {
   error?: string;
   modality?: string;
@@ -22,6 +24,20 @@ type LoadPyodide = (options: { indexURL: string }) => Promise<PyodideApi>;
 
 const PYODIDE_INDEX = "https://cdn.jsdelivr.net/pyodide/v314.0.6/full/";
 const PYODIDE_SCRIPT = `${PYODIDE_INDEX}pyodide.js`;
+
+export const PYODIDE_BASE_PACKAGES = ["numpy", "scipy", "micropip"] as const;
+export const DICOM_CODEC_PYODIDE_PACKAGES = ["pillow"] as const;
+export const DICOM_CODEC_REQUIRED_PACKAGES = ["pydicom==2.4.4", "pylibjpeg==2.1.0"] as const;
+// Native pylibjpeg plugins have no wasm wheels. The imagecodecs wasm wheel
+// aborts Pyodide when a codec is called, so JPEG 2000 and lossless JPEG are
+// decoded in the browser and passed into pydicom. Pillow covers baseline JPEG.
+export const DICOM_CODEC_OPTIONAL_PACKAGES = [
+  "pylibjpeg-libjpeg==2.4.0",
+  "pylibjpeg-openjpeg==2.6.0",
+] as const;
+export const DICOM_CODEC_STATUS = "Loading DICOM image codecs…";
+export const COMPRESSED_PIXEL_ERROR =
+  "This DICOM is compressed and the image codecs could not decode it.";
 
 let runtime: Promise<PyodideApi> | null = null;
 
@@ -98,13 +114,70 @@ async function writeEngine(pyodide: PyodideApi): Promise<void> {
   }
 }
 
+function pythonPackageList(packages: readonly string[]): string {
+  return JSON.stringify(packages);
+}
+
+async function installMicropipPackages(
+  pyodide: PyodideApi,
+  packages: readonly string[],
+  optional: boolean,
+): Promise<void> {
+  const names = pythonPackageList(packages);
+  const body = optional
+    ? `for name in ${names}:
+    try:
+        await micropip.install(name)
+    except Exception:
+        pass`
+    : `missing = []
+for name in ${names}:
+    try:
+        await micropip.install(name)
+    except Exception:
+        missing.append(name)
+if missing:
+    raise RuntimeError(",".join(missing))`;
+  await pyodide.runPythonAsync(`import micropip\n${body}`);
+}
+
+function userFacingSolverError(message: string): string {
+  const codecFailure = /handlers are available to decode|missing required dependencies|could not be read because Pillow|Unable to decode the pixel data|JPEG 2000 plugin|pylibjpeg|imagecodecs/i.test(
+    message,
+  );
+  if (codecFailure) {
+    return COMPRESSED_PIXEL_ERROR;
+  }
+  if (!message.includes("Traceback")) {
+    return message;
+  }
+  const lines = message
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const last = lines[lines.length - 1] ?? "The analysis request failed.";
+  return last.replace(/^[A-Za-z_][\w.]*:\s*/, "");
+}
+
 async function startRuntime(onStatus: (text: string) => void): Promise<PyodideApi> {
   onStatus("Loading the browser solver…");
   await loadScript(PYODIDE_SCRIPT);
   const pyodide = await pyodideLoader()({ indexURL: PYODIDE_INDEX });
   onStatus("Loading NumPy and SciPy…");
-  await pyodide.loadPackage(["numpy", "scipy", "micropip"]);
-  await pyodide.runPythonAsync("import micropip\nawait micropip.install('pydicom==2.4.4')");
+  await pyodide.loadPackage([...PYODIDE_BASE_PACKAGES]);
+  onStatus(DICOM_CODEC_STATUS);
+  try {
+    await pyodide.loadPackage([...DICOM_CODEC_PYODIDE_PACKAGES]);
+    await installMicropipPackages(pyodide, DICOM_CODEC_REQUIRED_PACKAGES, false);
+    await prepareDicomDecoders();
+    const codecHost = globalThis as typeof globalThis & {
+      osteovigilDecodeDicomFrame?: typeof decodeDicomFrame;
+    };
+    codecHost.osteovigilDecodeDicomFrame = decodeDicomFrame;
+  } catch {
+    throw new Error("The DICOM image codecs could not be installed in this browser.");
+  }
+  await installMicropipPackages(pyodide, DICOM_CODEC_OPTIONAL_PACKAGES, true);
   await writeEngine(pyodide);
   await pyodide.runPythonAsync("import sys\nsys.path.insert(0, '/pkg')\nimport cpt_predictor.browser_api");
   return pyodide;
@@ -146,13 +219,23 @@ export async function analyzeInBrowser(
   pyodide.globals.set("study_dir", source);
   pyodide.globals.set("body_mass_kg", bodyMassKg);
   pyodide.globals.set("prefer_weight", preferDicomWeight);
-  const raw = await pyodide.runPythonAsync(`
+  let raw: unknown;
+  try {
+    raw = await pyodide.runPythonAsync(`
 import json
 from cpt_predictor.browser_api import analyze_upload
 json.dumps(analyze_upload(study_dir, float(body_mass_kg), bool(prefer_weight)))
 `);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "The analysis request failed.";
+    throw new Error(userFacingSolverError(message));
+  }
   if (typeof raw !== "string") {
     throw new Error("The browser solver did not return a result.");
   }
-  return JSON.parse(raw) as StrengthPayload;
+  const payload = JSON.parse(raw) as StrengthPayload;
+  if (payload.error) {
+    payload.error = userFacingSolverError(payload.error);
+  }
+  return payload;
 }
