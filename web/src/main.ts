@@ -6,6 +6,7 @@ import {
   projectWeakness,
   projectWithWebGPU,
   projectionsAgree,
+  type PaintMode,
   type Projection,
 } from "./project";
 
@@ -90,8 +91,14 @@ function comparisonSentence(report: StrengthResponse): string {
   }
 }
 
-function rasterProjection(shape: number[], b64: string): Projection {
+function rasterProjection(shape: number[], b64: string): Projection | null {
+  if (shape.length < 2 || shape[0] < 1 || shape[1] < 1) {
+    return null;
+  }
   const decoded = decodeVolume([1, shape[0], shape[1]], [1, 1, 1], b64);
+  if (decoded.values.length < shape[0] * shape[1]) {
+    return null;
+  }
   return {
     values: decoded.values,
     width: shape[1],
@@ -100,16 +107,7 @@ function rasterProjection(shape: number[], b64: string): Projection {
   };
 }
 
-async function projectionsFor(report: StrengthResponse): Promise<{ ap: Projection | null; lateral: Projection | null; renderer: string; gpuMatch: string }> {
-  if (report.weakness) {
-    const volume = decodeVolume(report.weakness.shape, report.weakness.spacing_mm, report.weakness.b64);
-    const cpu = projectWeakness(volume);
-    const gpu = await projectWithWebGPU(volume);
-    if (gpu && projectionsAgree(cpu.ap.values, gpu.ap.values) && projectionsAgree(cpu.lateral.values, gpu.lateral.values)) {
-      return { ap: gpu.ap, lateral: gpu.lateral, renderer: "webgpu", gpuMatch: "true" };
-    }
-    return { ap: cpu.ap, lateral: cpu.lateral, renderer: "cpu", gpuMatch: gpu ? "false" : "n/a" };
-  }
+function rasterPair(report: StrengthResponse): { ap: Projection | null; lateral: Projection | null; renderer: string; gpuMatch: string } {
   const apRaster = report.rasters?.ap;
   const lateralRaster = report.rasters?.lateral;
   return {
@@ -120,13 +118,45 @@ async function projectionsFor(report: StrengthResponse): Promise<{ ap: Projectio
   };
 }
 
+async function projectionsFor(report: StrengthResponse): Promise<{ ap: Projection | null; lateral: Projection | null; renderer: string; gpuMatch: string }> {
+  if (report.modality === "radiograph") {
+    return rasterPair(report);
+  }
+  if (report.weakness) {
+    const volume = decodeVolume(report.weakness.shape, report.weakness.spacing_mm, report.weakness.b64);
+    const cpu = projectWeakness(volume);
+    const gpu = await projectWithWebGPU(volume);
+    if (gpu && projectionsAgree(cpu.ap.values, gpu.ap.values) && projectionsAgree(cpu.lateral.values, gpu.lateral.values)) {
+      return { ap: gpu.ap, lateral: gpu.lateral, renderer: "webgpu", gpuMatch: "true" };
+    }
+    return { ap: cpu.ap, lateral: cpu.lateral, renderer: "cpu", gpuMatch: gpu ? "false" : "n/a" };
+  }
+  return rasterPair(report);
+}
+
+function paintMode(report: StrengthResponse): PaintMode {
+  switch (report.modality) {
+    case "radiograph":
+      return "radiograph";
+    case "ct":
+    case "mri":
+    case "unknown":
+      return "weakness";
+    default: {
+      const neverKind: never = report.modality;
+      return neverKind;
+    }
+  }
+}
+
 function paintPair(report: StrengthResponse, ap: Projection | null, lateral: Projection | null, distalAtBottom: boolean): void {
   const apAcquired = report.views.ap.acquired && ap !== null;
   const lateralAcquired = report.views.lateral.acquired && lateral !== null;
+  const mode = paintMode(report);
   apState.textContent = apAcquired ? "" : "not in this study";
   lateralState.textContent = lateralAcquired ? "" : "not in this study";
-  paintProjection(apCanvas, ap, apAcquired, "No AP view in this study.", distalAtBottom);
-  paintProjection(lateralCanvas, lateral, lateralAcquired, "No lateral view in this study.", distalAtBottom);
+  paintProjection(apCanvas, ap, apAcquired, "No AP view in this study.", distalAtBottom, mode);
+  paintProjection(lateralCanvas, lateral, lateralAcquired, "No lateral view in this study.", distalAtBottom, mode);
 }
 
 function showReport(report: StrengthResponse, ap: Projection | null, lateral: Projection | null, renderer: string, gpuMatch: string): void {
@@ -159,7 +189,7 @@ function showReport(report: StrengthResponse, ap: Projection | null, lateral: Pr
   rendererLine.dataset.renderer = renderer;
   rendererLine.dataset.gpuMatch = gpuMatch;
   rendererLine.textContent = renderer === "webgpu" ? "Projection renderer: WebGPU" : "Projection renderer: CPU";
-  paintPair(report, ap, lateral, Boolean(report.weakness));
+  paintPair(report, ap, lateral, report.modality !== "radiograph" && Boolean(report.weakness));
   setStatus("Analysis finished.");
 }
 

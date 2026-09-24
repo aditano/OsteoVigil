@@ -22,7 +22,7 @@ from .comparison import (
 from .errors import StrengthAnalysisError
 from .materials import apparent_density_g_cm3, yield_strength_from_density, youngs_modulus_from_density
 from .mri_geometry import UNIFORM_CORTEX_MODULUS_MPA, UNIFORM_CORTEX_YIELD_MPA, segment_mri_cortex
-from .radiograph import analyze_radiographs, projection_pair_from_rasters, raster_volume
+from .radiograph import analyze_radiographs, projection_pair_from_rasters
 from .reference_leg import build_reference_volume
 from .segmentation import TibFibMasks, segment_tibia_and_fibula
 from .strength_io import load_dicom_path
@@ -348,7 +348,6 @@ def analyze_radiograph_views(
     compared = strength_comparison(float(measured["failure_load_n"]), float(measured["reference_failure_load_n"]))
     walked = walking_assessment(float(measured["failure_load_n"]), body_mass_kg)
     rasters = {name: np.asarray(image) for name, image in dict(measured["rasters"]).items()}
-    volume = raster_volume(rasters)
     assumptions = [
         str(measured["assumption"]),
         "Radiograph strength uses a 120 MPa cortical yield and the weakest midshaft section. It is not a voxel finite-element model.",
@@ -377,8 +376,8 @@ def analyze_radiograph_views(
         tibia_voxels=int(measured["tibia_voxels"]),
         fibula_voxels=int(measured["fibula_voxels"]),
         solver="radiograph_cortical_index",
-        weakness=None if volume is None else np.asarray(volume, dtype=np.float32),
-        weakness_spacing_zyx=(1.0, 1.0, 1.0),
+        weakness=None,
+        weakness_spacing_zyx=None,
         views_acquired={"ap": "ap" in rasters, "lateral": "lateral" in rasters},
         rasters=rasters,
     )
