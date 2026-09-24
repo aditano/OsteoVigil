@@ -21,7 +21,9 @@ From the repo root, with Python 3.11+ and Node.js available:
 python bootstrap.py
 ```
 
-Then open http://127.0.0.1:8765 . Bootstrap creates `.venv`, installs `requirements.txt`, builds `web/`, and starts the site. It does not install FEBio for this entrypoint.
+Then open http://127.0.0.1:8765 . Bootstrap creates `.venv`, installs `requirements.txt`, builds `web/`, and starts the site. It skips the FEBio install for this entrypoint.
+
+The same page is published at https://aditano.github.io/OsteoVigil/ . That build runs this Python solver in the browser with Pyodide. The DICOM stays on the computer that opened the page. GitHub Actions deploys it from `main` (`.github/workflows/pages.yml`).
 
 Body mass comes from the DICOM `PatientWeight` tag when that tag is present and the checkbox is on. Otherwise edit the mass field. The field starts at 70 kg and stays visible.
 

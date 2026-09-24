@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>OsteoVigil tib/fib strength</title>
-    <link rel="stylesheet" href="/src/style.css" />
+    <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body>
     <header class="top">
@@ -33,6 +33,7 @@
             Use the weight stored in the DICOM header when it is present.
           </label>
           <button id="run" type="submit">Analyze limb</button>
+          <p id="engine-note" class="note"></p>
           <p id="status" class="status">Waiting for a study.</p>
         </form>
       </section>
@@ -56,6 +57,6 @@
       </section>
       <p id="renderer" class="renderer" data-renderer="cpu" data-gpu-match="n/a">Projection renderer: CPU</p>
     </main>
-    <script type="module" src="/src/main.ts"></script>
+    <script type="module" src="./src/main.ts"></script>
   </body>
 </html>

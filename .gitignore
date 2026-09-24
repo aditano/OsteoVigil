@@ -10,6 +10,7 @@ venv/
 outputs/
 dist/
 node_modules/
+web/public/engine/
 build/
 *.egg-info/
 /tmp/

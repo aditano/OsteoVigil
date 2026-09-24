@@ -1,3 +1,4 @@
+import { analyzeInBrowser } from "./browserSolver";
 import {
   decodeVolume,
   modalityLabel,
@@ -64,6 +65,10 @@ const lateralCanvas = requiredElement<HTMLCanvasElement>("lateral");
 const apState = requiredElement<HTMLSpanElement>("ap-state");
 const lateralState = requiredElement<HTMLSpanElement>("lateral-state");
 const rendererLine = requiredElement<HTMLParagraphElement>("renderer");
+const engineNote = requiredElement<HTMLParagraphElement>("engine-note");
+
+const BROWSER_SOLVER_NOTE = "The solver runs in this browser. The DICOM stays on this computer.";
+let useBrowserSolver = location.hostname.endsWith("github.io");
 
 function setStatus(text: string): void {
   statusLine.textContent = text;
@@ -165,21 +170,58 @@ function showFailure(message: string): void {
   paintProjection(lateralCanvas, null, false, "No lateral view yet.", true);
 }
 
-async function analyze(files: File[]): Promise<void> {
+async function serverAvailable(): Promise<boolean> {
+  if (useBrowserSolver) {
+    return false;
+  }
+  try {
+    const response = await fetch("/api/health", { signal: AbortSignal.timeout(800) });
+    if (!response.ok) {
+      return false;
+    }
+    const payload = (await response.json()) as { analysis?: string };
+    return payload.analysis === "voxel_hexahedral_linear_elastic";
+  } catch {
+    return false;
+  }
+}
+
+async function analyzeOnServer(files: File[]): Promise<StrengthResponse> {
   const body = new FormData();
   for (const file of files) {
     body.append("files", file, file.name);
   }
   body.append("body_mass_kg", massInput.value);
   body.append("use_dicom_weight", weightToggle.checked ? "1" : "0");
+  const response = await fetch("/api/analyze", { method: "POST", body });
+  const payload = (await response.json()) as StrengthResponse;
+  if (!response.ok || payload.error) {
+    throw new Error(payload.error || "The analysis did not finish.");
+  }
+  return payload;
+}
+
+async function analyze(files: File[]): Promise<void> {
   runButton.disabled = true;
-  setStatus("Solving the vertical load case…");
   try {
-    const response = await fetch("/api/analyze", { method: "POST", body });
-    const payload = (await response.json()) as StrengthResponse;
-    if (!response.ok || payload.error) {
-      showFailure(payload.error || "The analysis did not finish.");
-      return;
+    let payload: StrengthResponse;
+    if (await serverAvailable()) {
+      engineNote.textContent = "The solver runs on this computer.";
+      setStatus("Solving the vertical load case…");
+      payload = await analyzeOnServer(files);
+    } else {
+      useBrowserSolver = true;
+      engineNote.textContent = BROWSER_SOLVER_NOTE;
+      const browserPayload = await analyzeInBrowser(
+        files,
+        Number(massInput.value),
+        weightToggle.checked,
+        setStatus,
+      );
+      if (browserPayload.error) {
+        throw new Error(browserPayload.error);
+      }
+      payload = browserPayload as StrengthResponse;
     }
     const projected = await projectionsFor(payload);
     showReport(payload, projected.ap, projected.lateral, projected.renderer, projected.gpuMatch);
@@ -231,5 +273,8 @@ drop.addEventListener("drop", (event) => {
   describeFiles(Array.from(dropped));
 });
 
+engineNote.textContent = useBrowserSolver
+  ? BROWSER_SOLVER_NOTE
+  : "A local server runs the solver when it is available. Otherwise the solver runs in this browser.";
 paintProjection(apCanvas, null, false, "No AP view yet.", true);
 paintProjection(lateralCanvas, null, false, "No lateral view yet.", true);
