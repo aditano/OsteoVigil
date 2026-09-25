@@ -40,6 +40,9 @@ type RadiographMeasures = {
   views: Record<string, RadiographViewMeasure>;
 };
 
+type UnreliableReason = "" | "spacing" | "canal" | "stronger";
+type BodyMassSource = "dicom" | "entered";
+
 type StrengthResponse = {
   modality: ScanKind;
   method: string;
@@ -56,6 +59,8 @@ type StrengthResponse = {
   solver: string;
   measurement_reliable?: boolean;
   measurement_note?: string;
+  body_mass_source?: BodyMassSource;
+  unreliable_reason?: UnreliableReason;
   radiograph_measures?: RadiographMeasures;
   views: {
     ap: { acquired: boolean };
@@ -279,13 +284,61 @@ function paintPair(report: StrengthResponse, ap: Projection | null, lateral: Pro
   paintProjection(lateralCanvas, lateral, lateralAcquired, "No lateral view in this study.", distalAtBottom, mode);
 }
 
+function unreliableReason(report: StrengthResponse): UnreliableReason {
+  switch (report.unreliable_reason) {
+    case "spacing":
+    case "canal":
+    case "stronger":
+    case "":
+      return report.unreliable_reason;
+    case undefined:
+      return "";
+    default: {
+      const neverReason: never = report.unreliable_reason;
+      return neverReason;
+    }
+  }
+}
+
+function auditWarning(reason: UnreliableReason): string {
+  switch (reason) {
+    case "spacing":
+      return "Pixel spacing was missing, so the millimetre rows are not calibrated.";
+    case "canal":
+      return "The canal was not resolved. The rows below are not a strength score.";
+    case "stronger":
+      return "The raw millimetre measures below are for audit. They are not a stronger-than-normal result.";
+    case "":
+      return "Measurement unreliable.";
+    default: {
+      const neverReason: never = reason;
+      return neverReason;
+    }
+  }
+}
+
+function bodyMassText(report: StrengthResponse): string {
+  const mass = `${report.body_mass_kg.toFixed(1)} kg`;
+  switch (report.body_mass_source) {
+    case "dicom":
+      return `${mass} (from the DICOM header)`;
+    case "entered":
+      return `${mass} (entered, not from the DICOM header)`;
+    case undefined:
+      return mass;
+    default: {
+      const neverSource: never = report.body_mass_source;
+      return neverSource;
+    }
+  }
+}
+
 function showMeasurementWarning(report: StrengthResponse): void {
   percentLine.classList.toggle("unreliable", report.comparison === "unreliable");
   percentLine.dataset.comparison = report.comparison;
   if (report.comparison === "unreliable") {
     measurementWarning.hidden = false;
-    measurementWarning.textContent =
-      "The raw millimetre measures below are for audit. They are not a stronger-than-normal result.";
+    measurementWarning.textContent = auditWarning(unreliableReason(report));
     return;
   }
   if (report.measurement_note) {
@@ -303,11 +356,13 @@ function showReport(report: StrengthResponse, ap: Projection | null, lateral: Pr
   percentLine.textContent = comparisonSentence(report);
   showMeasurementWarning(report);
   const hotspot = report.hotspot_z_mm === null ? "none localized" : `${report.hotspot_z_mm.toFixed(1)} mm from the distal end`;
-  const untrusted = report.comparison === "unreliable" ? " (untrusted)" : "";
+  const reason = unreliableReason(report);
+  const withheld = reason === "canal" || reason === "spacing";
+  const untrusted = reason === "stronger" ? " (untrusted)" : "";
   const rows: Array<[string, string]> = [
-    ["Failure load", `${Math.round(report.failure_load_n).toLocaleString()} N${untrusted}`],
-    ["Body weights", `${report.failure_load_bodyweights.toFixed(2)}×${untrusted}`],
-    ["Body mass", `${report.body_mass_kg.toFixed(1)} kg`],
+    ["Failure load", withheld ? "not scored" : `${Math.round(report.failure_load_n).toLocaleString()} N${untrusted}`],
+    ["Body weights", withheld ? "not scored" : `${report.failure_load_bodyweights.toFixed(2)}×${untrusted}`],
+    ["Body mass", bodyMassText(report)],
     ["Hotspot", hotspot],
   ];
   const measures = report.radiograph_measures;
@@ -315,9 +370,9 @@ function showReport(report: StrengthResponse, ap: Projection | null, lateral: Pr
     rows.push(
       ["Midshaft outer diameter", diameterSummary(measures, "outer_diameter_mm")],
       ["Midshaft inner diameter", diameterSummary(measures, "inner_diameter_mm")],
-      ["Cortical area", `${Math.round(measures.cortical_area_mm2).toLocaleString()} mm²`],
+      ["Cortical area", withheld ? "not scored" : `${Math.round(measures.cortical_area_mm2).toLocaleString()} mm²`],
       ["Spacing", spacingSummary(measures)],
-      ["Reference failure load", `${Math.round(measures.reference_failure_load_n).toLocaleString()} N`],
+      ["Reference failure load", withheld ? "not scored" : `${Math.round(measures.reference_failure_load_n).toLocaleString()} N`],
     );
   }
   metrics.replaceChildren();
