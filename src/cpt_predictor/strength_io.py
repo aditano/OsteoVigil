@@ -82,15 +82,21 @@ def _patient_weight_kg(datasets: list[Any]) -> float | None:
     return None
 
 
-def _stack_slices(datasets: list[Any]) -> tuple[np.ndarray, tuple[float, float, float]]:
-    def sort_key(dataset: Any) -> float:
-        position = getattr(dataset, "ImagePositionPatient", None)
-        if position is not None and len(position) >= 3:
-            return float(position[2])
-        return float(getattr(dataset, "InstanceNumber", 0) or 0)
+def _slice_sort_key(dataset: Any) -> float:
+    position = getattr(dataset, "ImagePositionPatient", None)
+    if position is not None and len(position) >= 3:
+        return float(position[2])
+    return float(getattr(dataset, "InstanceNumber", 0) or 0)
 
-    ordered = sorted(datasets, key=sort_key)
-    pixels = [_pixel_values(dataset) for dataset in ordered]
+
+def _ordered_datasets(datasets: list[Any]) -> list[Any]:
+    return sorted(datasets, key=_slice_sort_key)
+
+
+def _volume_from_pixels(
+    pixels: list[np.ndarray],
+    ordered: list[Any],
+) -> tuple[np.ndarray, tuple[float, float, float]]:
     if len(pixels) == 1 and pixels[0].ndim == 3:
         volume = pixels[0]
     else:
@@ -122,7 +128,7 @@ def _classify_datasets(datasets: list[Any]) -> ModalityAssessment:
     )
 
 
-def load_dicom_path(path: Path) -> dict[str, Any]:
+def resolve_dicom_datasets(path: Path) -> list[Any]:
     path = Path(path)
     if path.is_file() and path.suffix.lower() == ".zip":
         extract_root = path.parent / f"{path.stem}_unzipped"
@@ -134,38 +140,84 @@ def load_dicom_path(path: Path) -> dict[str, Any]:
     datasets = _datasets_from_files(files)
     if not datasets:
         raise StrengthAnalysisError(f"No readable DICOM files were found in {path}.")
-    header = _classify_datasets(datasets)
-    if not header.supported or header.kind is None:
-        raise StrengthAnalysisError(header.detail, modality="unknown")
-    weight = _patient_weight_kg(datasets)
-    if header.kind == "radiograph":
-        views: dict[str, tuple[np.ndarray, tuple[float, float]]] = {}
-        assumed: dict[str, bool] = {}
-        for dataset in datasets:
+    return datasets
+
+
+class StudyDecoder:
+    """Decode DICOM pixels one dataset at a time, then build the study dict.
+
+    ``load_dicom_path`` decodes every dataset before returning. The browser
+    solver uses the same decoder so it can report each image as it finishes.
+    """
+
+    def __init__(self, datasets: list[Any]) -> None:
+        self.header = _classify_datasets(datasets)
+        if not self.header.supported or self.header.kind is None:
+            raise StrengthAnalysisError(self.header.detail, modality="unknown")
+        self.kind = self.header.kind
+        self.weight = _patient_weight_kg(datasets)
+        if self.kind == "radiograph":
+            self._datasets = list(datasets)
+        else:
+            self._datasets = _ordered_datasets(datasets)
+        self._index = 0
+        self._views: dict[str, tuple[np.ndarray, tuple[float, float]]] = {}
+        self._assumed: dict[str, bool] = {}
+        self._pixels: list[np.ndarray] = []
+
+    @property
+    def total(self) -> int:
+        return len(self._datasets)
+
+    @property
+    def done(self) -> int:
+        return self._index
+
+    def decode_next(self) -> None:
+        if self._index >= len(self._datasets):
+            return
+        dataset = self._datasets[self._index]
+        pixels = _pixel_values(dataset)
+        if self.kind == "radiograph":
             view, was_assumed = radiographic_view(
                 str(getattr(dataset, "ViewPosition", "") or ""),
                 str(getattr(dataset, "SeriesDescription", "") or ""),
                 str(getattr(dataset, "ProtocolName", "") or ""),
             )
-            views[view] = (_pixel_values(dataset), _pixel_spacing(dataset))
-            assumed[view] = was_assumed
+            self._views[view] = (pixels, _pixel_spacing(dataset))
+            self._assumed[view] = was_assumed
+        else:
+            self._pixels.append(pixels)
+        self._index += 1
+
+    def study(self) -> dict[str, Any]:
+        if self._index < len(self._datasets):
+            raise StrengthAnalysisError("The DICOM series is only partly decoded.", modality=self.kind)
+        if self.kind == "radiograph":
+            return {
+                "kind": "radiograph",
+                "views": self._views,
+                "view_assumed": self._assumed,
+                "patient_weight_kg": self.weight,
+                "header": self.header,
+            }
+        volume, spacing = _volume_from_pixels(self._pixels, self._datasets)
+        if volume.ndim != 3 or volume.shape[0] < 4:
+            raise StrengthAnalysisError(
+                "CT and MRI analysis needs a stack of slices, not a single image.",
+                modality=self.kind,
+            )
         return {
-            "kind": "radiograph",
-            "views": views,
-            "view_assumed": assumed,
-            "patient_weight_kg": weight,
-            "header": header,
+            "kind": self.kind,
+            "volume": volume,
+            "spacing_zyx": spacing,
+            "patient_weight_kg": self.weight,
+            "header": self.header,
         }
-    volume, spacing = _stack_slices(datasets)
-    if volume.ndim != 3 or volume.shape[0] < 4:
-        raise StrengthAnalysisError(
-            "CT and MRI analysis needs a stack of slices, not a single image.",
-            modality=header.kind,
-        )
-    return {
-        "kind": header.kind,
-        "volume": volume,
-        "spacing_zyx": spacing,
-        "patient_weight_kg": weight,
-        "header": header,
-    }
+
+
+def load_dicom_path(path: Path) -> dict[str, Any]:
+    decoder = StudyDecoder(resolve_dicom_datasets(path))
+    while decoder.done < decoder.total:
+        decoder.decode_next()
+    return decoder.study()

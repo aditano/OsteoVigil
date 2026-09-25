@@ -39,6 +39,17 @@ export const DICOM_CODEC_STATUS = "Loading DICOM image codecs…";
 export const COMPRESSED_PIXEL_ERROR =
   "This DICOM is compressed and the image codecs could not decode it.";
 
+export type BrowserStage = "solver" | "numpy" | "scipy" | "codecs" | "engine" | "read" | "decode" | "solve";
+
+export type BrowserProgress = {
+  stage: BrowserStage;
+  label: string;
+  fraction?: number;
+};
+
+// Pyodide is started from this page script, on the main thread, not in a Worker.
+export const SOLVER_THREAD = "main" as const;
+
 let runtime: Promise<PyodideApi> | null = null;
 
 function pyodideLoader(): LoadPyodide {
@@ -159,13 +170,60 @@ function userFacingSolverError(message: string): string {
   return last.replace(/^[A-Za-z_][\w.]*:\s*/, "");
 }
 
-async function startRuntime(onStatus: (text: string) => void): Promise<PyodideApi> {
-  onStatus("Loading the browser solver…");
+async function readFileBytes(
+  file: File,
+  onBytes: (loaded: number, total: number) => void,
+): Promise<Uint8Array> {
+  const total = file.size;
+  if (typeof file.stream !== "function" || total === 0) {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    onBytes(bytes.byteLength, Math.max(total, bytes.byteLength));
+    return bytes;
+  }
+  const reader = file.stream().getReader();
+  const chunks: Uint8Array[] = [];
+  let loaded = 0;
+  while (true) {
+    const step = await reader.read();
+    if (step.done) {
+      break;
+    }
+    chunks.push(step.value);
+    loaded += step.value.byteLength;
+    onBytes(loaded, total);
+  }
+  const bytes = new Uint8Array(loaded);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+function pythonJson(raw: unknown): Record<string, unknown> {
+  if (typeof raw !== "string") {
+    throw new Error("The browser solver did not return a result.");
+  }
+  return JSON.parse(raw) as Record<string, unknown>;
+}
+
+function yieldToBrowser(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
+}
+
+async function startRuntime(onProgress: (event: BrowserProgress) => void): Promise<PyodideApi> {
+  onProgress({ stage: "solver", label: "Loading the browser solver…" });
   await loadScript(PYODIDE_SCRIPT);
   const pyodide = await pyodideLoader()({ indexURL: PYODIDE_INDEX });
-  onStatus("Loading NumPy and SciPy…");
-  await pyodide.loadPackage([...PYODIDE_BASE_PACKAGES]);
-  onStatus(DICOM_CODEC_STATUS);
+  const [numpyPackage, ...scipyPackages] = PYODIDE_BASE_PACKAGES;
+  onProgress({ stage: "numpy", label: "Loading NumPy…" });
+  await pyodide.loadPackage(numpyPackage);
+  onProgress({ stage: "scipy", label: "Loading SciPy…" });
+  await pyodide.loadPackage([...scipyPackages]);
+  onProgress({ stage: "codecs", label: DICOM_CODEC_STATUS });
   try {
     await pyodide.loadPackage([...DICOM_CODEC_PYODIDE_PACKAGES]);
     await installMicropipPackages(pyodide, DICOM_CODEC_REQUIRED_PACKAGES, false);
@@ -178,6 +236,7 @@ async function startRuntime(onStatus: (text: string) => void): Promise<PyodideAp
     throw new Error("The DICOM image codecs could not be installed in this browser.");
   }
   await installMicropipPackages(pyodide, DICOM_CODEC_OPTIONAL_PACKAGES, true);
+  onProgress({ stage: "engine", label: "Loading the strength solver…" });
   await writeEngine(pyodide);
   await pyodide.runPythonAsync("import sys\nsys.path.insert(0, '/pkg')\nimport cpt_predictor.browser_api");
   return pyodide;
@@ -189,29 +248,40 @@ function safeFileName(name: string, index: number): string {
   return `${String(index).padStart(4, "0")}_${cleaned}`;
 }
 
+export function browserSolverReady(): boolean {
+  return runtime !== null;
+}
+
 export async function analyzeInBrowser(
   files: File[],
   bodyMassKg: number,
   preferDicomWeight: boolean,
-  onStatus: (text: string) => void,
+  onProgress: (event: BrowserProgress) => void,
 ): Promise<StrengthPayload> {
   if (!runtime) {
-    runtime = startRuntime(onStatus).catch((error: unknown) => {
+    runtime = startRuntime(onProgress).catch((error: unknown) => {
       runtime = null;
       throw error;
     });
   }
   const pyodide = await runtime;
-  onStatus("Solving the vertical load case…");
   const studyDir = "/studies/current";
   resetDirectory(pyodide.FS, studyDir);
   const written: string[] = [];
+  const readLabel = "Reading the study…";
+  onProgress({ stage: "read", label: readLabel, fraction: 0 });
   for (let index = 0; index < files.length; index += 1) {
     const file = files[index];
     const filename = safeFileName(file.name, index);
-    const bytes = new Uint8Array(await file.arrayBuffer());
+    const fileStart = index / files.length;
+    const fileSpan = 1 / files.length;
+    const bytes = await readFileBytes(file, (loaded, total) => {
+      const portion = total > 0 ? loaded / total : 1;
+      onProgress({ stage: "read", label: readLabel, fraction: fileStart + fileSpan * portion });
+    });
     pyodide.FS.writeFile(`${studyDir}/${filename}`, bytes);
     written.push(filename);
+    onProgress({ stage: "read", label: readLabel, fraction: (index + 1) / files.length });
   }
   const source = written.length === 1 && written[0].toLowerCase().endsWith(".zip")
     ? `${studyDir}/${written[0]}`
@@ -221,19 +291,51 @@ export async function analyzeInBrowser(
   pyodide.globals.set("prefer_weight", preferDicomWeight);
   let raw: unknown;
   try {
+    const preparedRaw = await pyodide.runPythonAsync(`
+import json
+from cpt_predictor.browser_api import prepare_study
+json.dumps(prepare_study(study_dir))
+`);
+    const prepared = pythonJson(preparedRaw);
+    if (typeof prepared.error === "string") {
+      throw new Error(prepared.error);
+    }
+    const total = typeof prepared.count === "number" ? prepared.count : 0;
+    if (total < 1) {
+      throw new Error("No readable DICOM files were found.");
+    }
+    const decodeLabel = "Decoding DICOM…";
+    for (let index = 0; index < total; index += 1) {
+      onProgress({ stage: "decode", label: decodeLabel, fraction: index / total });
+      await yieldToBrowser();
+      const step = pythonJson(await pyodide.runPythonAsync(`
+import json
+from cpt_predictor.browser_api import decode_next_dataset
+json.dumps(decode_next_dataset())
+`));
+      if (typeof step.error === "string") {
+        throw new Error(step.error);
+      }
+      const done = typeof step.done === "number" ? step.done : index + 1;
+      const reportedTotal = typeof step.total === "number" ? step.total : total;
+      onProgress({
+        stage: "decode",
+        label: decodeLabel,
+        fraction: reportedTotal > 0 ? done / reportedTotal : 1,
+      });
+    }
+    onProgress({ stage: "solve", label: "Solving the vertical load case…" });
+    await yieldToBrowser();
     raw = await pyodide.runPythonAsync(`
 import json
-from cpt_predictor.browser_api import analyze_upload
-json.dumps(analyze_upload(study_dir, float(body_mass_kg), bool(prefer_weight)))
+from cpt_predictor.browser_api import solve_prepared_study
+json.dumps(solve_prepared_study(float(body_mass_kg), bool(prefer_weight)))
 `);
   } catch (error) {
     const message = error instanceof Error ? error.message : "The analysis request failed.";
     throw new Error(userFacingSolverError(message));
   }
-  if (typeof raw !== "string") {
-    throw new Error("The browser solver did not return a result.");
-  }
-  const payload = JSON.parse(raw) as StrengthPayload;
+  const payload = pythonJson(raw) as StrengthPayload;
   if (payload.error) {
     payload.error = userFacingSolverError(payload.error);
   }

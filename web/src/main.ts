@@ -1,4 +1,13 @@
-import { analyzeInBrowser } from "./browserSolver";
+import { analyzeInBrowser, browserSolverReady, SOLVER_THREAD, type BrowserProgress } from "./browserSolver";
+import {
+  formatComputeBadge,
+  probeGraphics,
+  viewCanvasIs2d,
+  type DisplayPlace,
+  type GraphicsProbe,
+  type SolverPlace,
+} from "./graphicsProbe";
+import { createRunProgress, type RunProgress, type StageId } from "./runProgress";
 import {
   decodeVolume,
   modalityLabel,
@@ -54,6 +63,10 @@ const massInput = requiredElement<HTMLInputElement>("mass");
 const weightToggle = requiredElement<HTMLInputElement>("use-dicom-weight");
 const runButton = requiredElement<HTMLButtonElement>("run");
 const statusLine = requiredElement<HTMLParagraphElement>("status");
+const progressPercent = requiredElement<HTMLSpanElement>("progress-percent");
+const progressTrack = requiredElement<HTMLDivElement>("progress-track");
+const progressFill = requiredElement<HTMLDivElement>("progress-fill");
+const computeBadge = requiredElement<HTMLParagraphElement>("compute-badge");
 const results = requiredElement<HTMLElement>("results");
 const modalityLine = requiredElement<HTMLParagraphElement>("modality");
 const percentLine = requiredElement<HTMLParagraphElement>("percent");
@@ -71,8 +84,57 @@ const engineNote = requiredElement<HTMLParagraphElement>("engine-note");
 const BROWSER_SOLVER_NOTE = "The solver runs in this browser. The DICOM stays on this computer.";
 let useBrowserSolver = location.hostname.endsWith("github.io");
 
+const COLD_BROWSER_STAGES: readonly StageId[] = [
+  "solver",
+  "numpy",
+  "scipy",
+  "codecs",
+  "engine",
+  "read",
+  "decode",
+  "solve",
+  "render",
+];
+const WARM_BROWSER_STAGES: readonly StageId[] = ["read", "decode", "solve", "render"];
+const SERVER_STAGES: readonly StageId[] = ["upload", "solve", "render"];
+
 function setStatus(text: string): void {
   statusLine.textContent = text;
+}
+
+function showProgress(label: string, percent: number): void {
+  progressPercent.hidden = false;
+  progressTrack.hidden = false;
+  setStatus(label);
+  progressPercent.textContent = `${percent}%`;
+  progressFill.style.width = `${percent}%`;
+  progressTrack.setAttribute("aria-valuenow", String(percent));
+  progressTrack.setAttribute("aria-valuetext", `${label} ${percent}%`);
+}
+
+function resetProgress(): void {
+  progressFill.style.transition = "none";
+  progressFill.style.width = "0%";
+  progressTrack.setAttribute("aria-valuenow", "0");
+  progressTrack.setAttribute("aria-valuetext", "");
+  progressPercent.textContent = "0%";
+  progressFill.getBoundingClientRect();
+  progressFill.style.transition = "";
+}
+
+function showComputeBadge(solver: SolverPlace, probe: GraphicsProbe): void {
+  const display: DisplayPlace = "canvas-2d";
+  const canvas2d = viewCanvasIs2d(apCanvas) && viewCanvasIs2d(lateralCanvas);
+  computeBadge.hidden = false;
+  computeBadge.textContent = formatComputeBadge(probe, solver, display, SOLVER_THREAD);
+  computeBadge.dataset.compute = solver === "pyodide-main" ? "pyodide-wasm" : "local-python";
+  computeBadge.dataset.display = display;
+  computeBadge.dataset.canvas2d = canvas2d ? "true" : "false";
+  computeBadge.dataset.gpu = probe.webgl || probe.webgpu ? "available" : "unavailable";
+  computeBadge.dataset.solverThread = solver === "pyodide-main" ? "main" : "server";
+  computeBadge.dataset.webgl = probe.webgl ? "true" : "false";
+  computeBadge.dataset.webgpu = probe.webgpu ? "true" : "false";
+  computeBadge.dataset.offscreenWebgl = probe.offscreenWebgl ? "true" : "false";
 }
 
 function comparisonSentence(report: StrengthResponse): string {
@@ -190,7 +252,6 @@ function showReport(report: StrengthResponse, ap: Projection | null, lateral: Pr
   rendererLine.dataset.gpuMatch = gpuMatch;
   rendererLine.textContent = renderer === "webgpu" ? "Projection renderer: WebGPU" : "Projection renderer: CPU";
   paintPair(report, ap, lateral, report.modality !== "radiograph" && Boolean(report.weakness));
-  setStatus("Analysis finished.");
 }
 
 function showFailure(message: string): void {
@@ -216,46 +277,92 @@ async function serverAvailable(): Promise<boolean> {
   }
 }
 
-async function analyzeOnServer(files: File[]): Promise<StrengthResponse> {
+function analyzeOnServer(files: File[], onUpload: (fraction: number) => void): Promise<StrengthResponse> {
   const body = new FormData();
   for (const file of files) {
     body.append("files", file, file.name);
   }
   body.append("body_mass_kg", massInput.value);
   body.append("use_dicom_weight", weightToggle.checked ? "1" : "0");
-  const response = await fetch("/api/analyze", { method: "POST", body });
-  const payload = (await response.json()) as StrengthResponse;
-  if (!response.ok || payload.error) {
-    throw new Error(payload.error || "The analysis did not finish.");
-  }
-  return payload;
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/analyze");
+    xhr.responseType = "text";
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) {
+        onUpload(event.loaded / event.total);
+      }
+    };
+    xhr.upload.onload = () => onUpload(1);
+    xhr.onerror = () => reject(new Error("The analysis request failed."));
+    xhr.onload = () => {
+      let payload: StrengthResponse;
+      try {
+        payload = JSON.parse(xhr.responseText) as StrengthResponse;
+      } catch {
+        reject(new Error("The analysis request failed."));
+        return;
+      }
+      if (xhr.status < 200 || xhr.status >= 300 || payload.error) {
+        reject(new Error(payload.error || "The analysis did not finish."));
+        return;
+      }
+      resolve(payload);
+    };
+    xhr.send(body);
+  });
+}
+
+function yieldToBrowser(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
 }
 
 async function analyze(files: File[]): Promise<void> {
   runButton.disabled = true;
+  resetProgress();
+  showProgress("Starting analysis…", 0);
+  const graphics = await probeGraphics();
+  let tracker: RunProgress | null = null;
   try {
     let payload: StrengthResponse;
     if (await serverAvailable()) {
       engineNote.textContent = "The solver runs on this computer.";
-      setStatus("Solving the vertical load case…");
-      payload = await analyzeOnServer(files);
+      showComputeBadge("local-python", graphics);
+      tracker = createRunProgress(SERVER_STAGES, showProgress);
+      tracker.advance("upload", "Uploading the study…", 0);
+      payload = await analyzeOnServer(files, (fraction) => {
+        if (fraction >= 1) {
+          tracker?.advance("solve", "Solving the vertical load case…");
+          return;
+        }
+        tracker?.advance("upload", "Uploading the study…", fraction);
+      });
     } else {
       useBrowserSolver = true;
       engineNote.textContent = BROWSER_SOLVER_NOTE;
+      showComputeBadge("pyodide-main", graphics);
+      const stages = browserSolverReady() ? WARM_BROWSER_STAGES : COLD_BROWSER_STAGES;
+      tracker = createRunProgress(stages, showProgress);
       const browserPayload = await analyzeInBrowser(
         files,
         Number(massInput.value),
         weightToggle.checked,
-        setStatus,
+        (event: BrowserProgress) => tracker?.advance(event.stage, event.label, event.fraction),
       );
       if (browserPayload.error) {
         throw new Error(browserPayload.error);
       }
       payload = browserPayload as StrengthResponse;
     }
+    tracker.advance("render", "Rendering views…");
+    await yieldToBrowser();
     const projected = await projectionsFor(payload);
     showReport(payload, projected.ap, projected.lateral, projected.renderer, projected.gpuMatch);
+    tracker.finish();
   } catch (error) {
+    tracker?.stop();
     const message = error instanceof Error ? error.message : "The analysis request failed.";
     showFailure(message);
   } finally {
