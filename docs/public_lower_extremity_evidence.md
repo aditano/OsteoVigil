@@ -17,3 +17,13 @@ Numbers below are from `pytest tests/test_public_lower_extremity.py` on the cach
 | Body mass absent from the DICOM header | either | unchanged by the label | unchanged |  | The report says the entered kilograms are not a measured patient weight. Header weight, when present, is labeled as coming from the DICOM header. |
 
 The old 90.8% weaker headline (5,443 N versus 59,164 N, inner diameters estimated) came from a 2 mm cortex fallback while the reference canal was resolved. An unresolved canal is now `unreliable`, and the page does not present that fallback as a precise percent.
+
+## Browser check
+
+The built page was served by the local API and driven in headless Chrome.
+
+| Upload | What the page showed |
+| --- | --- |
+| STS_028 image-left shaft, DICOM, header weight 58 kg | 10.7% weaker, failure load 41,422 N, body mass "58.0 kg (from the DICOM header)". |
+| Sum projections of a public shaft crop, written as CR | 28.5% weaker, 26,035 N, reliable. Outer diameters AP 23.4 mm and lateral 27.3 mm, inners 13.7 mm and 13.9 mm. The 16-bit DICOM export clips the brightest projection sums, so this is a few kilonewtons below the float pytest row (18.8%, 29,571 N). Diameters still match the CT. |
+| Flat AP bar near 22 mm with no medullary valley | Headline: "The medullary canal was not resolved, so a percent versus a normal leg is not reported." Failure load, cortical area, and reference load say "not scored". Body mass says entered, not from the DICOM header. Walking is not estimated. |
