@@ -116,7 +116,7 @@ def _largest_component(mask: np.ndarray) -> np.ndarray:
 
 def _shaft_along_rows(image: np.ndarray) -> bool:
     """Long axis of the bright shaft, not of the brightest speckle inside it."""
-    low, high = np.percentile(image, [20.0, 99.0])
+    low, high = np.percentile(image, [5.0, 99.0])
     if high <= low + 1.0e-6:
         return image.shape[0] >= image.shape[1]
     level = float(low + 0.45 * (high - low))
