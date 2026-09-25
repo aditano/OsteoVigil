@@ -9,7 +9,6 @@ from typing import Any
 
 import numpy as np
 from scipy import ndimage as ndi
-from skimage.measure import block_reduce
 
 from .comparison import (
     RESEARCH_BANNER,
@@ -169,7 +168,15 @@ def _downsample_max(
         : shape[1] - (shape[1] % block[1]),
         : shape[2] - (shape[2] % block[2]),
     ]
-    reduced = block_reduce(trimmed, block, np.max)
+    bz, by, bx = block
+    reduced = trimmed.reshape(
+        trimmed.shape[0] // bz,
+        bz,
+        trimmed.shape[1] // by,
+        by,
+        trimmed.shape[2] // bx,
+        bx,
+    ).max(axis=(1, 3, 5))
     spacing = tuple(float(spacing_zyx[axis]) * block[axis] for axis in range(3))
     return np.asarray(reduced, dtype=np.float32), spacing
 
