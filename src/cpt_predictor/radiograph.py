@@ -5,9 +5,10 @@ elliptical annulus. Both are compared with a digitally reconstructed radiograph
 of the normal tib/fib segment of the same length.
 
 The shaft outline follows cortical crests, not the soft-tissue silhouette.
-Hardware brighter than cortex is removed before that outline is traced. An
-unresolved medullary canal is given a thin cortex instead of the area of a
-solid rod. A stronger-than-normal claim still has to clear a separate check:
+Hardware brighter than cortex is removed before that outline is traced. The
+long axis is rotated upright so a diagonal film is measured across the bone.
+An unresolved medullary canal is not reported as a precise percent weaker or
+stronger. A stronger-than-normal claim still has to clear a separate check:
 resolved canal, calibrated spacing, and an adult tibial outer diameter.
 """
 
@@ -32,6 +33,12 @@ CANAL_RESOLVED_FRACTION = 0.70
 UNRELIABLE_STRONGER_NOTE = (
     "Measurement unreliable. Cannot claim stronger than normal from this radiograph."
 )
+UNRESOLVED_CANAL_NOTE = (
+    "The medullary canal was not resolved, so a percent versus a normal leg is not reported."
+)
+MISSING_SPACING_NOTE = (
+    "Pixel spacing was missing, so strength is not scored and this is not a clearance to walk."
+)
 
 # Display rasters are one float32 channel.
 # [0, 1] is the windowed radiograph outside bone.
@@ -53,6 +60,7 @@ class ShaftMeasure:
     canal_resolved: np.ndarray
     line_index: np.ndarray
     mask: np.ndarray
+    display_image: np.ndarray | None = None
 
 
 def blocks_stronger_claim(
@@ -95,13 +103,22 @@ def _suppress_metal(image: np.ndarray) -> np.ndarray:
     finite = image[np.isfinite(image)]
     low, high = np.percentile(finite, [98.0, 99.9])
     capped = image.copy()
-    if high <= max(float(low) * 1.4, float(low) + 30.0):
-        return capped
-    limit = float(low) * 1.15 if low > 0 else float(low) + 30.0
-    metal = capped > limit
-    if float(np.mean(metal)) >= 0.02 or not np.any(~metal):
-        return capped
-    capped[metal] = float(np.median(capped[~metal]))
+    if high > max(float(low) * 1.4, float(low) + 30.0):
+        limit = float(low) * 1.15 if low > 0 else float(low) + 30.0
+        metal = capped > limit
+        if float(np.mean(metal)) < 0.02 and np.any(~metal):
+            capped[metal] = float(np.median(capped[~metal]))
+    bright_level = float(np.percentile(capped, 99.2))
+    specks = capped >= bright_level
+    labeled, count = ndi.label(specks)
+    if count:
+        sizes = np.bincount(labeled.ravel())
+        small = sizes < max(24, int(0.004 * capped.size))
+        small[0] = False
+        drop = small[labeled]
+        if np.any(drop) and np.any(~drop):
+            capped = capped.copy()
+            capped[drop] = float(np.median(capped[~drop]))
     return capped
 
 
@@ -144,19 +161,202 @@ def _runs_above(smooth: np.ndarray, level: float) -> list[tuple[int, int]]:
     return [(int(indices[start]), int(indices[stop])) for start, stop in zip(starts, stops)]
 
 
-def _canal_inner(smooth: np.ndarray, left: int, right: int, outer_mm: float, pixel_mm: float) -> tuple[float, bool]:
-    if right <= left + 1:
+def _shaft_angle_deg(image: np.ndarray) -> float:
+    """Degrees to rotate the image clockwise so the bright shaft stands upright."""
+    low, high = np.percentile(image, [8.0, 99.0])
+    if high <= low + 1.0e-6:
+        return 0.0
+    mask = _largest_component(image >= float(low + 0.40 * (high - low)))
+    if int(mask.sum()) < 40:
+        return 0.0
+    rows, cols = np.nonzero(mask)
+    coords = np.column_stack((rows.astype(float), cols.astype(float)))
+    coords -= coords.mean(axis=0)
+    _values, vectors = np.linalg.eigh(np.cov(coords, rowvar=False))
+    axis = vectors[:, int(np.argmax(_values))]
+    angle = float(np.degrees(np.arctan2(float(axis[1]), float(axis[0]))))
+    if angle > 90.0:
+        angle -= 180.0
+    elif angle < -90.0:
+        angle += 180.0
+    return angle
+
+
+def _align_shaft(
+    image: np.ndarray,
+    spacing_rc: tuple[float, float],
+) -> tuple[np.ndarray, tuple[float, float]]:
+    """Return a copy whose long axis follows image rows, with isotropic pixels."""
+    row_mm = float(spacing_rc[0])
+    col_mm = float(spacing_rc[1])
+    work = np.asarray(image, dtype=float)
+    # Match the finer pixel. Downsampling the cross-section blends the tibia
+    # into the fibula and erases the canal on a thick-slice DRR.
+    fine = min(row_mm, col_mm)
+    if fine > 0 and row_mm > fine * 1.03:
+        work = ndi.zoom(work, (row_mm / fine, 1.0), order=1)
+        row_mm = fine
+    if fine > 0 and col_mm > fine * 1.03:
+        work = ndi.zoom(work, (1.0, col_mm / fine), order=1)
+        col_mm = fine
+    angle = _shaft_angle_deg(work)
+    if abs(angle) >= 7.0:
+        background = float(np.percentile(work, 5))
+        work = ndi.rotate(work, -angle, reshape=True, order=1, cval=background)
+    return work, (row_mm, col_mm)
+
+
+def _split_on_gap(
+    smooth: np.ndarray,
+    left: int,
+    right: int,
+    soft: float,
+    peak: float,
+) -> list[tuple[int, int]]:
+    """Split a run at an interosseous gap. A shallow canal stays one bone."""
+    segment = smooth[left : right + 1]
+    if segment.size < 8:
+        return [(left, right)]
+    # The run edge is dim by definition. The gap that matters is the deepest
+    # interior notch between two brighter sides.
+    interior = [
+        index
+        for index in range(3, int(segment.size) - 3)
+        if float(segment[index]) <= float(segment[index - 1]) and float(segment[index]) <= float(segment[index + 1])
+    ]
+    if not interior:
+        return [(left, right)]
+    valley_at = min(interior, key=lambda index: float(segment[index]))
+    valley = float(segment[valley_at])
+    left_peak = float(np.max(segment[:valley_at]))
+    right_peak = float(np.max(segment[valley_at + 1 :]))
+    shorter = min(left_peak, right_peak)
+    # A medullary canal stays bright relative to both walls. An interosseous
+    # gap falls well below the shorter bone, even when one bone is brighter.
+    if valley > 0.60 * shorter:
+        return [(left, right)]
+    floor = soft + 0.25 * (shorter - soft)
+    if left_peak <= floor or right_peak <= floor:
+        return [(left, right)]
+    return [(left, left + valley_at - 1), (left + valley_at + 1, right)]
+
+
+def _split_deep_gaps(
+    smooth: np.ndarray,
+    left: int,
+    right: int,
+    soft: float,
+    peak: float,
+) -> list[tuple[int, int]]:
+    """Split every interosseous gap. A bright canal is left intact."""
+    pending = [(left, right)]
+    pieces: list[tuple[int, int]] = []
+    while pending:
+        start, stop = pending.pop()
+        parts = _split_on_gap(smooth, start, stop, soft, peak)
+        if len(parts) == 1:
+            pieces.append(parts[0])
+            continue
+        pending.extend(parts)
+    return pieces
+
+
+def _pair_cortical_walls(
+    runs: list[tuple[int, int]],
+    smooth: np.ndarray,
+    soft: float,
+    peak: float,
+    pixel_mm: float,
+) -> list[tuple[int, int]]:
+    """Join two cortical walls when the valley between them is a canal, not air."""
+    spans = list(runs)
+    for index, (start, stop) in enumerate(runs):
+        for next_start, next_stop in runs[index + 1 :]:
+            if next_start <= stop:
+                continue
+            outer = float(next_stop - start + 1) * pixel_mm
+            if outer < 8.0 or outer > 80.0:
+                continue
+            valley = float(np.min(smooth[stop : next_start + 1]))
+            left_height = float(np.max(smooth[start : stop + 1]))
+            right_height = float(np.max(smooth[next_start : next_stop + 1]))
+            crest = min(left_height, right_height)
+            # A canal stays above the soft-tissue baseline. The gap between
+            # tibia and fibula falls back to that baseline and must not join.
+            if valley <= soft + 0.35 * (crest - soft):
+                continue
+            spans.append((start, next_stop))
+    return spans
+
+
+def _local_peaks(segment: np.ndarray, floor: float) -> list[int]:
+    """Indices of local maxima at or above ``floor``, collapsing plateaus."""
+    peaks: list[int] = []
+    last = int(segment.size) - 1
+    for index in range(1, last):
+        value = float(segment[index])
+        if value < floor:
+            continue
+        if value < float(segment[index - 1]) or value < float(segment[index + 1]):
+            continue
+        if peaks and index - peaks[-1] <= 2:
+            if value >= float(segment[peaks[-1]]):
+                peaks[-1] = index
+            continue
+        peaks.append(index)
+    return peaks
+
+
+def _peak_width_mm(segment: np.ndarray, index: int, pixel_mm: float) -> float:
+    """Width of a crest near its tip. A projection tangent is narrow. A cortical band is not."""
+    height = float(segment[index])
+    level = 0.96 * height
+    left = index
+    while left > 0 and float(segment[left - 1]) >= level:
+        left -= 1
+    right = index
+    last = int(segment.size) - 1
+    while right < last and float(segment[right + 1]) >= level:
+        right += 1
+    return float(right - left) * pixel_mm
+
+
+def _canal_inner(
+    smooth: np.ndarray,
+    left: int,
+    right: int,
+    outer_mm: float,
+    pixel_mm: float,
+    soft: float,
+) -> tuple[float, bool]:
+    if right <= left + 2:
         return _conservative_inner(outer_mm), False
     segment = smooth[left : right + 1]
-    half = max(1, segment.size // 2)
-    left_peak = int(np.argmax(segment[:half]))
-    right_peak = half + int(np.argmax(segment[half:]))
+    height = float(np.max(segment))
+    peaks = _local_peaks(segment, 0.62 * height)
+    if len(peaks) >= 2:
+        left_peak = int(peaks[0])
+        right_peak = int(peaks[-1])
+    else:
+        half = max(1, segment.size // 2)
+        left_peak = int(np.argmax(segment[:half]))
+        right_peak = half + int(np.argmax(segment[half:]))
     if right_peak <= left_peak + 1:
         return _conservative_inner(outer_mm), False
+    # A digitally reconstructed shaft peaks in a narrow tangent at the endosteal
+    # boundary. Overlapping fibula can fill the canal and make that tangent the
+    # outer crest, so the crest-to-crest distance is the canal, not the brighter core.
+    if (
+        _peak_width_mm(segment, left_peak, pixel_mm) <= 3.0
+        and _peak_width_mm(segment, right_peak, pixel_mm) <= 3.0
+    ):
+        tangent = float(right_peak - left_peak) * pixel_mm
+        if 1.0 < tangent < outer_mm * 0.96:
+            return min(tangent, outer_mm * 0.92), True
     valley = float(np.min(segment[left_peak : right_peak + 1]))
     lower = float(min(segment[left_peak], segment[right_peak]))
-    contrast = (lower - valley) / max(lower, 1.0e-6)
-    if contrast < 0.08:
+    contrast = (lower - valley) / max(lower - soft, 1.0e-6)
+    if contrast < 0.18 or lower <= valley + 1.0e-6:
         return _conservative_inner(outer_mm), False
     level = 0.5 * (lower + valley)
     inner_left = left_peak
@@ -172,104 +372,106 @@ def _canal_inner(smooth: np.ndarray, left: int, right: int, outer_mm: float, pix
     inner = max(0.0, float(inner_right - inner_left) * pixel_mm)
     if inner <= 1.0 or inner >= outer_mm * 0.96:
         return _conservative_inner(outer_mm), False
-    return min(inner, outer_mm * 0.95), True
+    return min(inner, outer_mm * 0.92), True
+
+
+def _soft_tissue_envelope(smooth: np.ndarray, left: int, right: int, air: float, peak: float) -> bool:
+    """True when this run is skin around a brighter bone, not the bone itself.
+
+    A medullary canal also sits below the crests, but it lies between them.
+    Skin is the flat shelf outside the crests.
+    """
+    segment = smooth[left : right + 1]
+    if segment.size < 8:
+        return False
+    baseline = float(np.percentile(segment, 28))
+    if peak - baseline < 0.08 * (peak - air):
+        return False
+    bright = segment >= baseline + 0.45 * (peak - baseline)
+    if float(np.mean(bright)) > 0.70 or int(np.count_nonzero(bright)) < 3:
+        return False
+    bright_index = np.flatnonzero(bright)
+    core_left = int(bright_index[0])
+    core_right = int(bright_index[-1])
+    outside = np.concatenate([segment[:core_left], segment[core_right + 1 :]])
+    if outside.size < 0.28 * segment.size:
+        return False
+    near_baseline = np.abs(outside - baseline) <= 0.12 * (peak - air)
+    return bool(float(np.mean(near_baseline)) >= 0.72)
 
 
 def _section_from_line(profile: np.ndarray, pixel_mm: float) -> tuple[float, float, bool, int, int] | None:
     """Return outer mm, inner mm, canal resolved, and the column span on this line.
 
-    Cortical pixels are the bright runs. A single wide run is one shaft whose
-    canal may sit inside it. Two runs are the two walls of one bone. The
-    brightest plausible shaft is kept, so a second bone or a metal edge does
-    not set the outer diameter.
+    Soft tissue is the limb baseline. Cortical bone is the rise above that
+    baseline, so a skin silhouette is not scored as a solid rod. A fibular
+    gap that falls back to soft tissue is not treated as one wide canal.
     """
     raw = np.asarray(profile, dtype=float)
     if raw.size < 6:
         return None
-    sigma = float(np.clip(0.8 / max(pixel_mm, 1.0e-3), 0.8, 10.0))
+    sigma = float(np.clip(0.7 / max(pixel_mm, 1.0e-3), 0.6, 8.0))
     smooth = ndi.gaussian_filter1d(raw, sigma)
+    air = float(np.percentile(smooth, 12))
     peak = float(np.max(smooth))
-    if peak <= 1.0e-6:
+    if peak <= air + 1.0e-3:
         return None
-    min_px = max(1, int(round(0.6 / pixel_mm)))
-    runs = [run for run in _runs_above(smooth, 0.70 * peak) if run[1] - run[0] + 1 >= min_px]
-    if not runs:
+    tissue = air + 0.16 * (peak - air)
+    limb_runs = _runs_above(smooth, tissue)
+    if not limb_runs:
         return None
-    candidates: list[tuple[float, float, int, int]] = []
-    for index, (start, stop) in enumerate(runs):
-        outer = float(stop - start + 1) * pixel_mm
-        height = float(np.max(smooth[start : stop + 1]))
-        if 8.0 <= outer <= 42.0:
-            candidates.append((height, outer, start, stop))
-        for next_start, next_stop in runs[index + 1 :]:
-            outer = float(next_stop - start + 1) * pixel_mm
-            # Adult tibial outer diameter stays under this. A tibia-fibula span does not.
-            if outer < 8.0 or outer > 36.0:
-                continue
-            if next_start <= stop:
-                continue
-            valley = float(np.min(smooth[stop : next_start + 1]))
-            right_height = float(np.max(smooth[next_start : next_stop + 1]))
-            lower = min(height, right_height)
-            # A medullary canal is a deep valley that is still above background.
-            # A gap that falls to air is the space between two bones, not one canal.
-            if valley <= max(0.18 * peak, 0.22 * lower):
-                continue
-            candidates.append((lower, outer, start, next_stop))
-    if not candidates:
-        start, stop = max(runs, key=lambda run: run[1] - run[0])
-        left, right = _expand_bone(smooth, start, stop, peak, pixel_mm)
+    limb_left, limb_right = max(limb_runs, key=lambda run: run[1] - run[0])
+    limb = smooth[limb_left : limb_right + 1]
+    soft = float(np.percentile(limb, 32))
+    if peak - soft < 0.08 * (peak - air):
+        soft = air
+    bone_level = soft + 0.28 * (peak - soft)
+    min_px = max(1, int(round(0.8 / max(pixel_mm, 1.0e-3))))
+    raw_runs: list[tuple[int, int]] = []
+    for start, stop in _runs_above(smooth, bone_level):
+        start = max(start, limb_left)
+        stop = min(stop, limb_right)
+        if stop - start + 1 < min_px:
+            continue
+        raw_runs.extend(_split_deep_gaps(smooth, start, stop, soft, peak))
+    if not raw_runs:
+        outer = float(limb_right - limb_left + 1) * pixel_mm
+        if outer < 4.0:
+            return None
+        return outer, _conservative_inner(outer), False, limb_left, limb_right
+    spans = _pair_cortical_walls(raw_runs, smooth, soft, peak, pixel_mm)
+    # A bone-only projection (no skin plateau) is widest at the periosteal
+    # shoulder, which is fainter than a tangent crest or an overlapping fibula.
+    silhouette = air + 0.12 * (peak - air)
+    for start, stop in _runs_above(smooth, silhouette):
+        width = float(stop - start + 1) * pixel_mm
+        if width < 8.0 or width > 80.0:
+            continue
+        if _soft_tissue_envelope(smooth, start, stop, air, peak):
+            continue
+        spans.extend(_split_deep_gaps(smooth, start, stop, soft, peak))
+    scored: list[tuple[float, float, int, int]] = []
+    for left, right in spans:
+        outer = float(right - left + 1) * pixel_mm
+        if outer < 6.0 or outer > 90.0:
+            continue
+        height = float(np.max(smooth[left : right + 1]))
+        scored.append((height, outer, left, right))
+    if not scored:
+        left, right = max(raw_runs, key=lambda run: run[1] - run[0])
         outer = float(right - left + 1) * pixel_mm
         if outer < 4.0:
             return None
-        return outer, _conservative_inner(outer), False, left, right
-    _height, _outer, core_left, core_right = max(candidates, key=lambda item: (item[0], item[1]))
-    left, right = _expand_bone(smooth, core_left, core_right, peak, pixel_mm)
+        return outer, _conservative_inner(min(outer, 80.0)), False, left, right
+    brightest = max(item[0] for item in scored)
+    # A narrow crest inside a wider periosteal shoulder is the same bone.
+    # Keep the widest span that still reaches the brightest cortex, so a
+    # spacing change scales the diameter instead of jumping to a sub-peak.
+    containing = [item for item in scored if item[0] >= 0.72 * brightest]
+    _height, _outer, left, right = max(containing, key=lambda item: item[1])
     outer = float(right - left + 1) * pixel_mm
-    if outer > 48.0:
-        return outer, _conservative_inner(outer), False, left, right
-    inner, resolved = _canal_inner(smooth, left, right, outer, pixel_mm)
+    inner, resolved = _canal_inner(smooth, left, right, outer, pixel_mm, soft)
     return outer, inner, resolved, left, right
-
-
-def _expand_bone(smooth: np.ndarray, left: int, right: int, peak: float, pixel_mm: float) -> tuple[int, int]:
-    """Follow the cortical falloff a short distance, stopping at soft tissue or air."""
-    return (
-        _expand_edge(smooth, left, -1, peak, pixel_mm),
-        _expand_edge(smooth, right, 1, peak, pixel_mm),
-    )
-
-
-def _expand_edge(smooth: np.ndarray, start: int, direction: int, peak: float, pixel_mm: float) -> int:
-    """Stop at the periosteal gradient instead of walking into soft tissue.
-
-    The cortical core is already the bright run. The outer cortex is the first
-    steep falloff beyond that run. A shallow tail (soft tissue, cast, or blur)
-    is not added to the diameter.
-    """
-    index = int(start)
-    limit = 0 if direction < 0 else int(smooth.size) - 1
-    max_steps = max(1, int(round(3.0 / max(pixel_mm, 1.0e-3))))
-    best_index = index
-    best_drop = 0.0
-    for _step in range(max_steps):
-        if index == limit:
-            break
-        nxt = index + direction
-        current = float(smooth[index])
-        nxt_value = float(smooth[nxt])
-        drop = current - nxt_value
-        if drop < -0.04 * peak and (peak - current) > 0.12 * peak:
-            break
-        if drop > best_drop:
-            best_drop = drop
-            best_index = nxt
-        if nxt_value < 0.18 * peak:
-            return nxt
-        if best_drop > 0.025 * peak and drop < 0.45 * best_drop:
-            return best_index
-        index = nxt
-    return best_index
 
 
 def _longest_contiguous(records: list[dict[str, float | int | bool]]) -> list[dict[str, float | int | bool]]:
@@ -310,6 +512,7 @@ def _section_area(outer_mm: float, inner_mm: float) -> float:
 
 def measure_shaft(image: np.ndarray, spacing_rc_mm: tuple[float, float]) -> ShaftMeasure:
     values = _suppress_metal(_finite_image(image))
+    values, spacing_rc_mm = _align_shaft(values, (float(spacing_rc_mm[0]), float(spacing_rc_mm[1])))
     along_rows = _shaft_along_rows(values)
     row_spacing, col_spacing = (float(spacing_rc_mm[0]), float(spacing_rc_mm[1]))
     if along_rows:
@@ -381,6 +584,7 @@ def measure_shaft(image: np.ndarray, spacing_rc_mm: tuple[float, float]) -> Shaf
         canal_resolved=resolved_arr,
         line_index=line_index,
         mask=mask,
+        display_image=values,
     )
 
 
@@ -388,6 +592,19 @@ def _midshaft_window(count: int) -> slice:
     start = int(0.15 * count)
     stop = max(start + 1, int(0.85 * count))
     return slice(start, stop)
+
+
+def _robust_min(values: np.ndarray) -> float:
+    """Minimum of a short moving median, so one noisy row does not set the load."""
+    series = np.asarray(values, dtype=float)
+    if series.size == 0:
+        return 0.0
+    if series.size < 5:
+        return float(np.min(series))
+    window = 5
+    padded = np.pad(series, window // 2, mode="edge")
+    smoothed = np.array([float(np.median(padded[index : index + window])) for index in range(series.size)])
+    return float(np.min(smoothed))
 
 
 def _failure_from_profile(areas: np.ndarray, resolved: np.ndarray) -> tuple[float, bool]:
@@ -399,7 +616,7 @@ def _failure_from_profile(areas: np.ndarray, resolved: np.ndarray) -> tuple[floa
         flags = np.asarray(resolved, dtype=bool)
     trusted = bool(flags.size and float(np.mean(flags)) >= CANAL_RESOLVED_FRACTION and int(flags.sum()) >= 3)
     chosen = section[flags] if trusted else section
-    return CORTICAL_YIELD_MPA * float(np.min(chosen)), trusted
+    return CORTICAL_YIELD_MPA * _robust_min(chosen), trusted
 
 
 def _resample_flags(source: ShaftMeasure, relative: np.ndarray) -> np.ndarray:
@@ -537,7 +754,8 @@ def analyze_radiographs(
         profile = weakness_1d
         if name != primary_name:
             profile = np.interp(measured[name].relative, primary.relative, weakness_1d)
-        rasters[name] = display_raster(image, measured[name], profile)
+        shown = measured[name].display_image
+        rasters[name] = display_raster(image if shown is None else shown, measured[name], profile)
 
     hotspot = None
     if weakness_1d.size:
