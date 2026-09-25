@@ -21,19 +21,42 @@ import {
 
 type ScanKind = "ct" | "mri" | "radiograph" | "unknown";
 
+type RadiographViewMeasure = {
+  outer_diameter_mm: number;
+  inner_diameter_mm: number;
+  inner_estimated: boolean;
+  canal_resolved: boolean;
+  spacing_mm: number[];
+};
+
+type RadiographMeasures = {
+  cortical_area_mm2: number;
+  reference_cortical_area_mm2: number;
+  canal_resolved: boolean;
+  spacing_source: string;
+  spacing_assumed: boolean;
+  patient_failure_load_n: number;
+  reference_failure_load_n: number;
+  views: Record<string, RadiographViewMeasure>;
+};
+
 type StrengthResponse = {
   modality: ScanKind;
   method: string;
   body_mass_kg: number;
   failure_load_n: number;
   failure_load_bodyweights: number;
+  reference_failure_load_n?: number;
   percent_vs_normal: number;
-  comparison: "weaker" | "stronger" | "matched";
+  comparison: "weaker" | "stronger" | "matched" | "unreliable";
   walking_text: string;
   field_note: string;
   assumptions: string[];
   hotspot_z_mm: number | null;
   solver: string;
+  measurement_reliable?: boolean;
+  measurement_note?: string;
+  radiograph_measures?: RadiographMeasures;
   views: {
     ap: { acquired: boolean };
     lateral: { acquired: boolean };
@@ -74,6 +97,7 @@ const metrics = requiredElement<HTMLDListElement>("metrics");
 const walkingLine = requiredElement<HTMLParagraphElement>("walking");
 const fieldLine = requiredElement<HTMLParagraphElement>("field");
 const assumptions = requiredElement<HTMLUListElement>("assumptions");
+const measurementWarning = requiredElement<HTMLParagraphElement>("measurement-warning");
 const apCanvas = requiredElement<HTMLCanvasElement>("ap");
 const lateralCanvas = requiredElement<HTMLCanvasElement>("lateral");
 const apState = requiredElement<HTMLSpanElement>("ap-state");
@@ -146,11 +170,45 @@ function comparisonSentence(report: StrengthResponse): string {
       return `${percent}% stronger than a normal leg`;
     case "matched":
       return "0.0% difference from a normal leg under the same vertical load";
+    case "unreliable":
+      return report.measurement_note || "Measurement unreliable. Cannot claim stronger than normal from this radiograph.";
     default: {
       const neverWord: never = report.comparison;
       return neverWord;
     }
   }
+}
+
+function viewLabel(name: string): string {
+  switch (name) {
+    case "ap":
+      return "AP";
+    case "lateral":
+      return "Lateral";
+    default:
+      return name;
+  }
+}
+
+function diameterSummary(measures: RadiographMeasures, field: "outer_diameter_mm" | "inner_diameter_mm"): string {
+  return Object.entries(measures.views)
+    .map(([name, view]) => {
+      const estimated = field === "inner_diameter_mm" && view.inner_estimated ? " estimated" : "";
+      return `${viewLabel(name)} ${view[field].toFixed(1)} mm${estimated}`;
+    })
+    .join(", ");
+}
+
+function spacingSummary(measures: RadiographMeasures): string {
+  const views = Object.entries(measures.views)
+    .map(([name, view]) => {
+      const row = view.spacing_mm[0] ?? 0;
+      const col = view.spacing_mm[1] ?? row;
+      return `${viewLabel(name)} ${row.toFixed(3)} × ${col.toFixed(3)} mm`;
+    })
+    .join(", ");
+  const assumed = measures.spacing_assumed ? "assumed " : "";
+  return `${assumed}${measures.spacing_source}: ${views}`;
 }
 
 function rasterProjection(shape: number[], b64: string): Projection | null {
@@ -221,17 +279,47 @@ function paintPair(report: StrengthResponse, ap: Projection | null, lateral: Pro
   paintProjection(lateralCanvas, lateral, lateralAcquired, "No lateral view in this study.", distalAtBottom, mode);
 }
 
+function showMeasurementWarning(report: StrengthResponse): void {
+  percentLine.classList.toggle("unreliable", report.comparison === "unreliable");
+  percentLine.dataset.comparison = report.comparison;
+  if (report.comparison === "unreliable") {
+    measurementWarning.hidden = false;
+    measurementWarning.textContent =
+      "The raw millimetre measures below are for audit. They are not a stronger-than-normal result.";
+    return;
+  }
+  if (report.measurement_note) {
+    measurementWarning.hidden = false;
+    measurementWarning.textContent = report.measurement_note;
+    return;
+  }
+  measurementWarning.hidden = true;
+  measurementWarning.textContent = "";
+}
+
 function showReport(report: StrengthResponse, ap: Projection | null, lateral: Projection | null, renderer: string, gpuMatch: string): void {
   results.hidden = false;
   modalityLine.textContent = `${modalityLabel(report.modality)} · ${report.method.replaceAll("_", " ")}`;
   percentLine.textContent = comparisonSentence(report);
+  showMeasurementWarning(report);
   const hotspot = report.hotspot_z_mm === null ? "none localized" : `${report.hotspot_z_mm.toFixed(1)} mm from the distal end`;
+  const untrusted = report.comparison === "unreliable" ? " (untrusted)" : "";
   const rows: Array<[string, string]> = [
-    ["Failure load", `${Math.round(report.failure_load_n).toLocaleString()} N`],
-    ["Body weights", `${report.failure_load_bodyweights.toFixed(2)}×`],
+    ["Failure load", `${Math.round(report.failure_load_n).toLocaleString()} N${untrusted}`],
+    ["Body weights", `${report.failure_load_bodyweights.toFixed(2)}×${untrusted}`],
     ["Body mass", `${report.body_mass_kg.toFixed(1)} kg`],
     ["Hotspot", hotspot],
   ];
+  const measures = report.radiograph_measures;
+  if (measures) {
+    rows.push(
+      ["Midshaft outer diameter", diameterSummary(measures, "outer_diameter_mm")],
+      ["Midshaft inner diameter", diameterSummary(measures, "inner_diameter_mm")],
+      ["Cortical area", `${Math.round(measures.cortical_area_mm2).toLocaleString()} mm²`],
+      ["Spacing", spacingSummary(measures)],
+      ["Reference failure load", `${Math.round(measures.reference_failure_load_n).toLocaleString()} N`],
+    );
+  }
   metrics.replaceChildren();
   for (const [label, value] of rows) {
     const term = document.createElement("dt");
@@ -256,6 +344,10 @@ function showReport(report: StrengthResponse, ap: Projection | null, lateral: Pr
 
 function showFailure(message: string): void {
   results.hidden = true;
+  percentLine.classList.remove("unreliable");
+  delete percentLine.dataset.comparison;
+  measurementWarning.hidden = true;
+  measurementWarning.textContent = "";
   setStatus(message);
   paintProjection(apCanvas, null, false, "No AP view yet.", true);
   paintProjection(lateralCanvas, null, false, "No lateral view yet.", true);

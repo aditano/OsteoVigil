@@ -22,7 +22,12 @@ from .comparison import (
 from .errors import StrengthAnalysisError
 from .materials import apparent_density_g_cm3, yield_strength_from_density, youngs_modulus_from_density
 from .mri_geometry import UNIFORM_CORTEX_MODULUS_MPA, UNIFORM_CORTEX_YIELD_MPA, segment_mri_cortex
-from .radiograph import analyze_radiographs, projection_pair_from_rasters
+from .radiograph import (
+    UNRELIABLE_STRONGER_NOTE,
+    analyze_radiographs,
+    blocks_stronger_claim,
+    projection_pair_from_rasters,
+)
 from .reference_leg import build_reference_volume
 from .segmentation import TibFibMasks, segment_tibia_and_fibula
 from .strength_io import load_dicom_path
@@ -55,6 +60,9 @@ class StrengthReport:
     weakness_spacing_zyx: tuple[float, float, float] | None = None
     views_acquired: dict[str, bool] = field(default_factory=lambda: {"ap": True, "lateral": True})
     rasters: dict[str, np.ndarray] = field(default_factory=dict)
+    measurement_reliable: bool = True
+    measurement_note: str = ""
+    radiograph_measures: dict[str, Any] | None = None
 
     def public_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -78,6 +86,8 @@ class StrengthReport:
             "fibula_voxels": self.fibula_voxels,
             "solver": self.solver,
             "research_banner": self.research_banner,
+            "measurement_reliable": bool(self.measurement_reliable),
+            "measurement_note": self.measurement_note,
             "views": {
                 "ap": {"acquired": bool(self.views_acquired.get("ap", False))},
                 "lateral": {"acquired": bool(self.views_acquired.get("lateral", False))},
@@ -91,6 +101,8 @@ class StrengthReport:
                 "encoding": "float32-little",
                 "b64": encoded,
             }
+        if self.radiograph_measures is not None:
+            payload["radiograph_measures"] = self.radiograph_measures
         if self.rasters:
             payload["rasters"] = {}
             for name, image in self.rasters.items():
@@ -339,10 +351,42 @@ def analyze_mri_volume(
     return solved
 
 
+def _spacing_report(
+    views: dict[str, tuple[np.ndarray, tuple[float, float]]],
+    spacing_meta: dict[str, dict[str, Any]] | None,
+) -> tuple[bool, str, str]:
+    if not spacing_meta:
+        bits = [
+            f"{name} {float(spacing[0]):.3f} × {float(spacing[1]):.3f} mm"
+            for name, (_image, spacing) in views.items()
+        ]
+        detail = ", ".join(bits)
+        return False, "provided", f"Pixel spacing was supplied with the radiograph ({detail})."
+    assumed = any(bool(item.get("assumed")) for item in spacing_meta.values())
+    sources: list[str] = []
+    bits = []
+    for name, item in spacing_meta.items():
+        source = str(item.get("source", "unknown"))
+        if source not in sources:
+            sources.append(source)
+        bits.append(f"{name} {float(item['row_mm']):.3f} × {float(item['col_mm']):.3f} mm ({source})")
+    source_label = ", ".join(sources) if sources else "unknown"
+    detail = ", ".join(bits)
+    if assumed:
+        sentence = (
+            "Pixel spacing was not in the DICOM header, so 1.0 mm was assumed "
+            f"({detail}). Millimetre diameters are not calibrated."
+        )
+    else:
+        sentence = f"Pixel spacing came from {source_label} ({detail})."
+    return assumed, source_label, sentence
+
+
 def analyze_radiograph_views(
     views: dict[str, tuple[np.ndarray, tuple[float, float]]],
     body_mass_kg: float,
     view_assumed: dict[str, bool] | None = None,
+    spacing_meta: dict[str, dict[str, Any]] | None = None,
 ) -> StrengthReport:
     measured = analyze_radiographs(views)
     compared = strength_comparison(float(measured["failure_load_n"]), float(measured["reference_failure_load_n"]))
@@ -353,9 +397,66 @@ def analyze_radiograph_views(
         "Radiograph strength uses a 120 MPa cortical yield and the weakest midshaft section. It is not a voxel finite-element model.",
         "The normal leg is a digitally reconstructed radiograph of the reference tib/fib segment.",
     ]
+    spacing_assumed, spacing_source, spacing_sentence = _spacing_report(views, spacing_meta)
+    assumptions.append(spacing_sentence)
+    canal_resolved = bool(measured["canal_resolved"])
+    if not canal_resolved:
+        assumptions.append(
+            "The medullary canal was not resolved, so cortical thickness was limited to 2 mm instead of treating the shaft as a solid rod."
+        )
     assumed = view_assumed or {}
     if any(assumed.values()):
         assumptions.append("View position was not in the DICOM header, so the projection was treated as AP.")
+    percent_stronger = float(compared["percent_vs_normal"]) if compared["comparison"] == "stronger" else 0.0
+    blocked = blocks_stronger_claim(
+        percent_stronger,
+        canal_resolved=canal_resolved,
+        outer_diameters_mm=[float(value) for value in measured["outer_diameters_mm"]],
+        spacing_assumed=spacing_assumed,
+        reference_resolved=bool(measured["reference_resolved"]),
+    )
+    comparison = str(compared["comparison"])
+    measurement_reliable = True
+    measurement_note = ""
+    walking_verdict = str(walked["walking_verdict"])
+    walking_text = str(walked["walking_text"])
+    if blocked:
+        comparison = "unreliable"
+        measurement_reliable = False
+        measurement_note = UNRELIABLE_STRONGER_NOTE
+        walking_verdict = "unreliable"
+        walking_text = (
+            "Walking tolerance is not estimated. This radiograph cannot claim the limb is stronger than a normal shaft."
+        )
+        assumptions.append(measurement_note)
+    elif not canal_resolved:
+        measurement_note = (
+            "Inner diameter is a conservative estimate. The canal was not resolved, so strength is under-estimated rather than scored as a solid rod."
+        )
+        walking_verdict = "unreliable"
+        walking_text = (
+            "Walking tolerance is not estimated. The medullary canal was not resolved, so this failure load is not a clearance to walk."
+        )
+    view_rows: dict[str, Any] = {}
+    for name, item in dict(measured["view_measures"]).items():
+        view_rows[name] = {
+            "outer_diameter_mm": float(item["outer_diameter_mm"]),
+            "inner_diameter_mm": float(item["inner_diameter_mm"]),
+            "inner_estimated": bool(item["inner_estimated"]),
+            "canal_resolved": bool(item["canal_resolved"]),
+            "spacing_mm": [float(value) for value in item["spacing_mm"]],
+        }
+    radiograph_measures = {
+        "cortical_area_mm2": float(measured["cortical_area_mm2"]),
+        "reference_cortical_area_mm2": float(measured["reference_cortical_area_mm2"]),
+        "canal_resolved": canal_resolved,
+        "reference_resolved": bool(measured["reference_resolved"]),
+        "spacing_source": spacing_source,
+        "spacing_assumed": spacing_assumed,
+        "patient_failure_load_n": float(measured["failure_load_n"]),
+        "reference_failure_load_n": float(measured["reference_failure_load_n"]),
+        "views": view_rows,
+    }
     return StrengthReport(
         modality="radiograph",
         method="radiograph_cortical_index",
@@ -366,9 +467,9 @@ def analyze_radiograph_views(
         reference_failure_load_n=float(compared["reference_failure_load_n"]),
         percent_vs_normal=float(compared["percent_vs_normal"]),
         signed_percent_weaker=float(compared["signed_percent_weaker"]),
-        comparison=str(compared["comparison"]),
-        walking_verdict=str(walked["walking_verdict"]),
-        walking_text=str(walked["walking_text"]),
+        comparison=comparison,
+        walking_verdict=walking_verdict,
+        walking_text=walking_text,
         field_note=field_of_view_note(float(measured["bone_length_mm"])),
         assumptions=assumptions,
         hotspot_z_mm=None if measured["hotspot_z_mm"] is None else float(measured["hotspot_z_mm"]),
@@ -380,6 +481,9 @@ def analyze_radiograph_views(
         weakness_spacing_zyx=None,
         views_acquired={"ap": "ap" in rasters, "lateral": "lateral" in rasters},
         rasters=rasters,
+        measurement_reliable=measurement_reliable,
+        measurement_note=measurement_note,
+        radiograph_measures=radiograph_measures,
     )
 
 
@@ -399,7 +503,12 @@ def analyze_loaded_study(study: dict[str, Any], body_mass_kg: float | None, pref
     if kind == "mri":
         return analyze_mri_volume(study["volume"], study["spacing_zyx"], mass)
     if kind == "radiograph":
-        return analyze_radiograph_views(study["views"], mass, study.get("view_assumed"))
+        return analyze_radiograph_views(
+            study["views"],
+            mass,
+            study.get("view_assumed"),
+            study.get("radiograph_spacing"),
+        )
     raise StrengthAnalysisError(f"Unsupported scan type: {kind}")
 
 

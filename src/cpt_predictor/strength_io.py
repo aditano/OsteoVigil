@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -62,10 +63,80 @@ def _pixel_values(dataset: Any) -> np.ndarray:
 
 
 def _pixel_spacing(dataset: Any) -> tuple[float, float]:
+    """CT and MRI spacing. Radiographs use radiograph_pixel_spacing instead."""
     spacing = getattr(dataset, "PixelSpacing", None) or getattr(dataset, "ImagerPixelSpacing", None)
     if spacing is None:
         return (1.0, 1.0)
     return (float(spacing[0]), float(spacing[1]))
+
+
+@dataclass(frozen=True)
+class RadiographSpacing:
+    row_mm: float
+    col_mm: float
+    source: str
+    assumed: bool
+
+    def as_tuple(self) -> tuple[float, float]:
+        return (float(self.row_mm), float(self.col_mm))
+
+    def public_dict(self) -> dict[str, Any]:
+        return {
+            "row_mm": float(self.row_mm),
+            "col_mm": float(self.col_mm),
+            "source": self.source,
+            "assumed": bool(self.assumed),
+        }
+
+
+def _positive_spacing_pair(value: Any) -> tuple[float, float] | None:
+    if value is None:
+        return None
+    try:
+        row = float(value[0])
+        col = float(value[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    if row <= 0 or col <= 0 or not np.isfinite(row) or not np.isfinite(col):
+        return None
+    return (row, col)
+
+
+def _magnification_factor(dataset: Any) -> float | None:
+    raw = getattr(dataset, "EstimatedRadiographicMagnificationFactor", None)
+    if raw in (None, ""):
+        return None
+    try:
+        factor = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(factor) or factor < 1.0:
+        return None
+    return factor
+
+
+def radiograph_pixel_spacing(dataset: Any) -> RadiographSpacing:
+    """Patient-plane millimetres per pixel for a plain radiograph.
+
+    PixelSpacing is already in the patient plane. ImagerPixelSpacing is the
+    detector pitch and is divided by the magnification factor when that tag
+    is present and at least 1. A missing tag is 1.0 mm and is labeled assumed.
+    """
+    pixel = _positive_spacing_pair(getattr(dataset, "PixelSpacing", None))
+    if pixel is not None:
+        return RadiographSpacing(pixel[0], pixel[1], "PixelSpacing", False)
+    imager = _positive_spacing_pair(getattr(dataset, "ImagerPixelSpacing", None))
+    if imager is not None:
+        factor = _magnification_factor(dataset)
+        if factor is not None:
+            return RadiographSpacing(
+                imager[0] / factor,
+                imager[1] / factor,
+                "ImagerPixelSpacing/EstimatedRadiographicMagnificationFactor",
+                False,
+            )
+        return RadiographSpacing(imager[0], imager[1], "ImagerPixelSpacing", False)
+    return RadiographSpacing(1.0, 1.0, "assumed", True)
 
 
 def _patient_weight_kg(datasets: list[Any]) -> float | None:
@@ -163,6 +234,7 @@ class StudyDecoder:
         self._index = 0
         self._views: dict[str, tuple[np.ndarray, tuple[float, float]]] = {}
         self._assumed: dict[str, bool] = {}
+        self._spacing: dict[str, dict[str, Any]] = {}
         self._pixels: list[np.ndarray] = []
 
     @property
@@ -184,8 +256,10 @@ class StudyDecoder:
                 str(getattr(dataset, "SeriesDescription", "") or ""),
                 str(getattr(dataset, "ProtocolName", "") or ""),
             )
-            self._views[view] = (pixels, _pixel_spacing(dataset))
+            spacing = radiograph_pixel_spacing(dataset)
+            self._views[view] = (pixels, spacing.as_tuple())
             self._assumed[view] = was_assumed
+            self._spacing[view] = spacing.public_dict()
         else:
             self._pixels.append(pixels)
         self._index += 1
@@ -198,6 +272,7 @@ class StudyDecoder:
                 "kind": "radiograph",
                 "views": self._views,
                 "view_assumed": self._assumed,
+                "radiograph_spacing": self._spacing,
                 "patient_weight_kg": self.weight,
                 "header": self.header,
             }
