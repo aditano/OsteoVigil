@@ -177,6 +177,20 @@ button:disabled {
   font-size: 42px;
 }
 
+.percent.unreliable {
+  font-size: 28px;
+  line-height: 1.25;
+  color: #9a3412;
+}
+
+.warning {
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border-left: 4px solid #9a3412;
+  background: #fff1e6;
+  color: #7c2d12;
+}
+
 dl {
   display: grid;
   grid-template-columns: max-content 1fr;
