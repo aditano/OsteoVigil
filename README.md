@@ -25,6 +25,18 @@ Then open http://127.0.0.1:8765 . Bootstrap creates `.venv`, installs `requireme
 
 GitHub Actions deploys the same page to https://aditano.github.io/OsteoVigil/ from `main` (`.github/workflows/pages.yml`). In the repository settings, set Pages to deploy from GitHub Actions: https://github.com/aditano/OsteoVigil/settings/pages . That build runs this Python solver in the browser with Pyodide. The DICOM stays on the computer that opened the page.
 
+## What CPU and GPU mean here
+
+While an analysis runs, the page shows a progress bar and a compute badge.
+
+**Compute** is the strength solve. On GitHub Pages that is Pyodide: CPython compiled to WebAssembly, on the main thread, so the badge says `Compute: CPU (Pyodide/WASM, main thread)`. The finite-element solve and the radiograph cortical-index solve both stay on the CPU. JPEG 2000 and lossless JPEG are decoded on the CPU as well (OpenJPEG and a lossless JPEG decoder in the browser) and passed into that solver. Nothing in this path uploads the DICOM.
+
+**Display** is how the AP and lateral views are drawn. Those canvases use the ordinary 2D canvas API, so the badge says `Display: CPU (2D canvas)`. It says `Display: GPU (WebGL)` only when the views are actually drawn with a WebGL context. A CT or MRI weakness projection may use a WebGPU compute shader when the browser has one and the shader matches the CPU projection. That shader does not move the solve onto the GPU.
+
+If the browser cannot create a WebGL context and has no WebGPU adapter, the badge says `GPU unavailable · CPU only`.
+
+The percent is how far this run has gotten: Pyodide, NumPy, SciPy, DICOM codecs, reading the files, decoding each image, solving, then drawing the views. Finished steps move the bar forward. A long solve holds the main thread, so the bar stays on that stage until the solver returns instead of inventing a percent inside it.
+
 Body mass comes from the DICOM `PatientWeight` tag when that tag is present and the checkbox is on. Otherwise edit the mass field. The field starts at 70 kg and stays visible.
 
 To build and serve it yourself:

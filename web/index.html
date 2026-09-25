@@ -34,7 +34,25 @@
           </label>
           <button id="run" type="submit">Analyze limb</button>
           <p id="engine-note" class="note"></p>
-          <p id="status" class="status">Waiting for a study.</p>
+          <div class="status-block">
+            <div class="status-row">
+              <p id="status" class="status">Waiting for a study.</p>
+              <span id="progress-percent" class="progress-percent" hidden>0%</span>
+            </div>
+            <div
+              id="progress-track"
+              class="progress-track"
+              hidden
+              role="progressbar"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="0"
+              aria-labelledby="status"
+            >
+              <div id="progress-fill" class="progress-fill"></div>
+            </div>
+            <p id="compute-badge" class="badge" hidden></p>
+          </div>
         </form>
       </section>
       <section id="results" class="results" hidden>
