@@ -26,4 +26,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "public_data: cached public lower-extremity DICOM under data/external (download with scripts/download_public_abnormal_cts.py)",
+]
 

@@ -65,7 +65,7 @@ python main.py \
 
 No public archive currently hosts a downloadable congenital-pseudarthrosis-of-the-tibia CT volume. The closest **real 3D CT** series with tibia/fibula anatomy plus a documented lower-leg abnormality are extremity sarcomas on TCIA.
 
-Those DICOMs are large and stay gitignored under `data/external/` and `data/downloaded/`. Fetch them with:
+Those DICOMs are large and stay gitignored under `data/external/` and `data/downloaded/`. Licenses and what each series tests are listed in `data/PUBLIC_SOURCES.md`. Fetch them with:
 
 ```bash
 python scripts/download_public_abnormal_cts.py --list

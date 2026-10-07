@@ -32,6 +32,7 @@ def synthetic_tibfib_volume(
     tibia_cortex_mm: float = TIBIA_CORTEX_MM,
     fibula_radius_mm: float = FIBULA_RADIUS_MM,
     fibula_cortex_mm: float = FIBULA_CORTEX_MM,
+    fibula_offset_mm: float = FIBULA_OFFSET_MM,
     include_fibula: bool = True,
     notch_center_mm: Optional[float] = None,
     notch_depth_mm: float = 0.0,
@@ -44,7 +45,7 @@ def synthetic_tibfib_volume(
     x_min = -float(tibia_radius_mm) - margin
     x_max = float(tibia_radius_mm) + margin
     if include_fibula:
-        x_max = max(x_max, FIBULA_OFFSET_MM + float(fibula_radius_mm) + margin)
+        x_max = max(x_max, float(fibula_offset_mm) + float(fibula_radius_mm) + margin)
     y_min = -float(tibia_radius_mm) - margin
     y_max = float(tibia_radius_mm) + margin
     nx = max(8, int(np.ceil((x_max - x_min) / spacing)))
@@ -63,7 +64,7 @@ def synthetic_tibfib_volume(
     volume[tibia_core] = np.float32(trabecular_hu)
 
     if include_fibula:
-        fibula_radius = np.sqrt((x_mm - FIBULA_OFFSET_MM) ** 2 + y_mm**2)
+        fibula_radius = np.sqrt((x_mm - float(fibula_offset_mm)) ** 2 + y_mm**2)
         fibula_cortex = (fibula_radius <= fibula_radius_mm) & (fibula_radius >= fibula_radius_mm - fibula_cortex_mm)
         fibula_core = fibula_radius < (fibula_radius_mm - fibula_cortex_mm)
         volume[fibula_cortex] = np.float32(cortical_hu)

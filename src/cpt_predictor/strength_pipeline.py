@@ -23,12 +23,23 @@ from .errors import StrengthAnalysisError
 from .materials import apparent_density_g_cm3, yield_strength_from_density, youngs_modulus_from_density
 from .mri_geometry import UNIFORM_CORTEX_MODULUS_MPA, UNIFORM_CORTEX_YIELD_MPA, segment_mri_cortex
 from .radiograph import (
+    MISSING_SPACING_NOTE,
     UNRELIABLE_STRONGER_NOTE,
+    UNRESOLVED_CANAL_NOTE,
     analyze_radiographs,
     blocks_stronger_claim,
     projection_pair_from_rasters,
 )
-from .reference_leg import build_reference_volume
+from .reference_leg import (
+    CORTICAL_HU,
+    FIBULA_CORTEX_MM,
+    FIBULA_OFFSET_MM,
+    FIBULA_RADIUS_MM,
+    TIBIA_CORTEX_MM,
+    TIBIA_RADIUS_MM,
+    build_reference_volume,
+    synthetic_tibfib_volume,
+)
 from .segmentation import TibFibMasks, segment_tibia_and_fibula
 from .strength_io import load_dicom_path
 from .voxel_fea import VoxelSolveResult, body_weight_newtons, solve_voxel_elasticity
@@ -63,6 +74,8 @@ class StrengthReport:
     measurement_reliable: bool = True
     measurement_note: str = ""
     radiograph_measures: dict[str, Any] | None = None
+    body_mass_source: str = "entered"
+    unreliable_reason: str = ""
 
     def public_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -88,6 +101,8 @@ class StrengthReport:
             "research_banner": self.research_banner,
             "measurement_reliable": bool(self.measurement_reliable),
             "measurement_note": self.measurement_note,
+            "body_mass_source": self.body_mass_source,
+            "unreliable_reason": self.unreliable_reason,
             "views": {
                 "ap": {"acquired": bool(self.views_acquired.get("ap", False))},
                 "lateral": {"acquired": bool(self.views_acquired.get("lateral", False))},
@@ -138,6 +153,98 @@ def _resample(volume: np.ndarray, spacing_zyx: tuple[float, float, float], targe
     return resampled.astype(np.float32), (target, target, target)
 
 
+def _downsample_max(
+    volume: np.ndarray,
+    spacing_zyx: tuple[float, float, float],
+    target_mm: float,
+) -> tuple[np.ndarray, tuple[float, float, float]]:
+    """Downsample with a block maximum so cortical peaks are not averaged away."""
+    block = tuple(max(1, int(round(float(target_mm) / float(spacing)))) for spacing in spacing_zyx)
+    if all(size == 1 for size in block):
+        return np.asarray(volume, dtype=np.float32), tuple(float(value) for value in spacing_zyx)
+    shape = volume.shape
+    trimmed = volume[
+        : shape[0] - (shape[0] % block[0]),
+        : shape[1] - (shape[1] % block[1]),
+        : shape[2] - (shape[2] % block[2]),
+    ]
+    bz, by, bx = block
+    reduced = trimmed.reshape(
+        trimmed.shape[0] // bz,
+        bz,
+        trimmed.shape[1] // by,
+        by,
+        trimmed.shape[2] // bx,
+        bx,
+    ).max(axis=(1, 3, 5))
+    spacing = tuple(float(spacing_zyx[axis]) * block[axis] for axis in range(3))
+    return np.asarray(reduced, dtype=np.float32), spacing
+
+
+def _isolate_primary_limb(volume: np.ndarray, spacing_zyx: tuple[float, float, float]) -> np.ndarray:
+    """Keep one tib/fib pair when a bilateral field contains two distant limbs."""
+    bone = np.asarray(volume) >= 250.0
+    labeled, count = ndi.label(bone)
+    if count <= 1:
+        return volume
+    sizes = np.bincount(labeled.ravel())
+    sizes[0] = 0
+    order = np.argsort(sizes)[::-1]
+    centroids: list[tuple[int, float, float, float]] = []
+    for label in order:
+        if sizes[label] < 20:
+            break
+        zz, yy, xx = np.nonzero(labeled == label)
+        centroids.append((int(label), float(yy.mean()), float(xx.mean()), float(zz.mean())))
+    if len(centroids) <= 1:
+        return volume
+    primary = centroids[0]
+    limit_y = 45.0 / max(float(spacing_zyx[1]), 1.0e-3)
+    limit_x = 45.0 / max(float(spacing_zyx[2]), 1.0e-3)
+    nearby = [primary[0]]
+    for label, y_mean, x_mean, _z_mean in centroids[1:]:
+        if abs(y_mean - primary[1]) <= limit_y and abs(x_mean - primary[2]) <= limit_x:
+            nearby.append(label)
+    if len(nearby) == len(centroids):
+        return volume
+    keep = np.isin(labeled, nearby)
+    if int(keep.sum()) < 30:
+        return volume
+    slc = _bounds(keep, margin=2)
+    return np.asarray(volume[slc], dtype=np.float32)
+
+
+def _straighten_shaft(volume: np.ndarray) -> np.ndarray:
+    """Remove a linear positioning tilt so axial load follows the shaft."""
+    bone = np.asarray(volume) >= 180.0
+    rows: list[tuple[int, float, float]] = []
+    for index in range(volume.shape[0]):
+        yy, xx = np.nonzero(bone[index])
+        if yy.size < 15:
+            continue
+        rows.append((index, float(yy.mean()), float(xx.mean())))
+    if len(rows) < 6:
+        return volume
+    z_index = np.asarray([row[0] for row in rows], dtype=float)
+    y_mean = np.asarray([row[1] for row in rows], dtype=float)
+    x_mean = np.asarray([row[2] for row in rows], dtype=float)
+    slope_y, intercept_y = np.polyfit(z_index, y_mean, 1)
+    slope_x, intercept_x = np.polyfit(z_index, x_mean, 1)
+    drift = max(abs(float(slope_y)) * volume.shape[0], abs(float(slope_x)) * volume.shape[0])
+    if drift < 1.5:
+        return volume
+    z_mid = 0.5 * (volume.shape[0] - 1)
+    target_y = float(slope_y) * z_mid + float(intercept_y)
+    target_x = float(slope_x) * z_mid + float(intercept_x)
+    air = float(np.percentile(volume, 5))
+    straightened = np.empty_like(volume)
+    for index in range(volume.shape[0]):
+        shift_y = target_y - (float(slope_y) * index + float(intercept_y))
+        shift_x = target_x - (float(slope_x) * index + float(intercept_x))
+        straightened[index] = ndi.shift(volume[index], shift=(shift_y, shift_x), order=1, cval=air)
+    return straightened.astype(np.float32)
+
+
 def _bone_length_mm(mask: np.ndarray, spacing_z: float) -> float:
     present = np.flatnonzero(np.any(mask, axis=(1, 2)))
     if present.size == 0:
@@ -161,7 +268,11 @@ def _prepare_ct_grid(
     slc = _bounds(rough, margin=2)
     volume = volume[slc]
     spacing = tuple(float(value) for value in spacing_zyx)
-    if volume.size > 180_000 or min(spacing) < 1.5:
+    volume = _isolate_primary_limb(volume, spacing)
+    volume = _straighten_shaft(volume)
+    if min(spacing) < 1.7:
+        volume, spacing = _downsample_max(volume, spacing, 2.0)
+    elif volume.size > 180_000:
         volume, spacing = _resample(volume, spacing, 2.5)
     masks = segment_tibia_and_fibula(volume, spacing)
     voxels = int(masks.combined.sum())
@@ -201,18 +312,81 @@ def _ct_materials(hu: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.ndar
     return modulus, strength
 
 
+def _load_mask(masks: TibFibMasks) -> np.ndarray:
+    """Score the tibia. A thin fibula voxel chain should not set the limb failure load."""
+    if int(masks.tibia.sum()) >= 30:
+        return masks.tibia
+    return masks.combined
+
+
+def _shaft_calibration(
+    hu: np.ndarray,
+    masks: TibFibMasks,
+    spacing_zyx: tuple[float, float, float],
+) -> tuple[float, float, bool]:
+    """Return radius scale, cortical HU, and whether the reference should be size-matched.
+
+    A phantom that already has the reference cross-section keeps that exact model.
+    A clinical shaft uses its own periosteal size and cortical HU so scanner
+    calibration does not become a fake strength deficit.
+    """
+    tibia = masks.tibia if int(masks.tibia.sum()) >= 30 else masks.combined
+    areas = []
+    for index in range(tibia.shape[0]):
+        count = int(tibia[index].sum())
+        if count >= 4:
+            areas.append(count * float(spacing_zyx[1]) * float(spacing_zyx[2]))
+    if len(areas) < 3:
+        return 1.0, CORTICAL_HU, False
+    radius = float(np.sqrt(float(np.median(areas)) / np.pi))
+    scale = radius / TIBIA_RADIUS_MM
+    cortical = hu[tibia & (hu >= 700.0)]
+    cortical_hu = float(np.percentile(cortical, 60)) if cortical.size >= 8 else CORTICAL_HU
+    matched = abs(scale - 1.0) >= 0.08 or abs(cortical_hu - CORTICAL_HU) >= 120.0
+    if not matched:
+        return 1.0, CORTICAL_HU, False
+    return float(np.clip(scale, 0.60, 1.40)), float(np.clip(cortical_hu, 700.0, 1700.0)), True
+
+
 def _reference_ct(
     length_mm: float,
-    spacing_mm: float,
+    spacing_zyx: tuple[float, float, float],
     force_n: float,
+    radius_scale: float = 1.0,
+    cortical_hu: float = CORTICAL_HU,
+    size_matched: bool = False,
 ) -> VoxelSolveResult:
-    reference_hu, spacing = build_reference_volume(length_mm, spacing_mm)
-    masks = segment_tibia_and_fibula(reference_hu, spacing)
+    spacing_zyx = tuple(float(value) for value in spacing_zyx)
+    isotropic = max(spacing_zyx) - min(spacing_zyx) < 0.05
+    if not size_matched and isotropic:
+        reference_hu, spacing = build_reference_volume(length_mm, spacing_zyx[0])
+        masks = segment_tibia_and_fibula(reference_hu, spacing)
+        if int(masks.combined.sum()) < 30:
+            raise StrengthAnalysisError("The normal tib/fib reference could not be segmented.", modality="ct")
+        hu, masks = _crop_pair(reference_hu, masks)
+        modulus, strength = _ct_materials(hu, masks.combined)
+        return _solve_masked(modulus, strength, masks.combined, spacing, force_n)
+    fine = 0.8
+    scale = float(radius_scale)
+    reference_hu, _fine_spacing = synthetic_tibfib_volume(
+        length_mm,
+        fine,
+        cortical_hu=float(cortical_hu),
+        trabecular_hu=max(180.0, float(cortical_hu) * 0.25),
+        tibia_radius_mm=TIBIA_RADIUS_MM * scale,
+        tibia_cortex_mm=max(1.2, TIBIA_CORTEX_MM * scale),
+        fibula_radius_mm=FIBULA_RADIUS_MM * scale,
+        fibula_cortex_mm=max(0.8, FIBULA_CORTEX_MM * scale),
+        fibula_offset_mm=FIBULA_OFFSET_MM * scale,
+    )
+    zoom = tuple(fine / spacing for spacing in spacing_zyx)
+    matched = ndi.zoom(reference_hu, zoom, order=0).astype(np.float32)
+    masks = segment_tibia_and_fibula(matched, spacing_zyx)
     if int(masks.combined.sum()) < 30:
         raise StrengthAnalysisError("The normal tib/fib reference could not be segmented.", modality="ct")
-    hu, masks = _crop_pair(reference_hu, masks)
+    hu, masks = _crop_pair(matched, masks)
     modulus, strength = _ct_materials(hu, masks.combined)
-    return _solve_masked(modulus, strength, masks.combined, spacing, force_n)
+    return _solve_masked(modulus, strength, _load_mask(masks), spacing_zyx, force_n)
 
 
 def _finish(
@@ -266,16 +440,31 @@ def analyze_ct_volume(
     volume, masks, spacing = _prepare_ct_grid(hu, spacing_zyx)
     weight = body_weight_from_mass(body_mass_kg)
     modulus, strength = _ct_materials(volume, masks.combined)
-    patient = _solve_masked(modulus, strength, masks.combined, spacing, weight)
-    length = _bone_length_mm(masks.combined, spacing[0])
-    reference = _reference_ct(length, spacing[0], weight)
+    radius_scale, cortical_hu, size_matched = _shaft_calibration(volume, masks, spacing)
+    solved_mask = _load_mask(masks) if size_matched else masks.combined
+    patient = _solve_masked(modulus, strength, solved_mask, spacing, weight)
+    length = _bone_length_mm(solved_mask, spacing[0])
+    reference = _reference_ct(
+        length,
+        spacing,
+        weight,
+        radius_scale=radius_scale,
+        cortical_hu=cortical_hu,
+        size_matched=size_matched,
+    )
     assumptions = [
         "Uncalibrated clinical CT: absolute newtons are not phantom-calibrated. The percent comparison uses the same material law on both legs.",
         "Linear voxel finite-element model. Failure is the axial load at which 2% of interior cortical voxels exceed yield.",
         "Vertical load only. The distal end is fixed and the proximal end carries body weight.",
     ]
+    if size_matched:
+        assumptions.append(
+            "The normal leg is scaled to this bone's length and midshaft size, and it uses this scan's cortical HU."
+        )
     if masks.fibula_voxels == 0:
         assumptions.append("The fibula was not a separate connected component, so the model uses the bone that could be separated.")
+    elif size_matched and int(masks.tibia.sum()) >= 30:
+        assumptions.append("Failure load is the tibial cortex. The fibula is kept in the segmentation but does not set the percent.")
     return _finish(
         modality="ct",
         method="voxel_hexahedral_linear_elastic",
@@ -418,11 +607,21 @@ def analyze_radiograph_views(
     comparison = str(compared["comparison"])
     measurement_reliable = True
     measurement_note = ""
+    unreliable_reason = ""
     walking_verdict = str(walked["walking_verdict"])
     walking_text = str(walked["walking_text"])
-    if blocked:
+    if spacing_assumed:
         comparison = "unreliable"
         measurement_reliable = False
+        unreliable_reason = "spacing"
+        measurement_note = MISSING_SPACING_NOTE
+        walking_verdict = "unreliable"
+        walking_text = "Walking tolerance is not estimated. Pixel spacing was not in the DICOM header."
+        assumptions.append(measurement_note)
+    elif blocked:
+        comparison = "unreliable"
+        measurement_reliable = False
+        unreliable_reason = "stronger"
         measurement_note = UNRELIABLE_STRONGER_NOTE
         walking_verdict = "unreliable"
         walking_text = (
@@ -430,13 +629,15 @@ def analyze_radiograph_views(
         )
         assumptions.append(measurement_note)
     elif not canal_resolved:
-        measurement_note = (
-            "Inner diameter is a conservative estimate. The canal was not resolved, so strength is under-estimated rather than scored as a solid rod."
-        )
+        comparison = "unreliable"
+        measurement_reliable = False
+        unreliable_reason = "canal"
+        measurement_note = UNRESOLVED_CANAL_NOTE
         walking_verdict = "unreliable"
         walking_text = (
-            "Walking tolerance is not estimated. The medullary canal was not resolved, so this failure load is not a clearance to walk."
+            "Walking tolerance is not estimated. The medullary canal was not resolved, so this study is not a clearance to walk."
         )
+        assumptions.append(measurement_note)
     view_rows: dict[str, Any] = {}
     for name, item in dict(measured["view_measures"]).items():
         view_rows[name] = {
@@ -484,12 +685,14 @@ def analyze_radiograph_views(
         measurement_reliable=measurement_reliable,
         measurement_note=measurement_note,
         radiograph_measures=radiograph_measures,
+        unreliable_reason=unreliable_reason,
     )
 
 
 def analyze_loaded_study(study: dict[str, Any], body_mass_kg: float | None, prefer_dicom_weight: bool = True) -> StrengthReport:
     header_weight = study.get("patient_weight_kg")
-    if prefer_dicom_weight and header_weight:
+    used_header = bool(prefer_dicom_weight and header_weight)
+    if used_header:
         mass = float(header_weight)
     elif body_mass_kg is None:
         raise StrengthAnalysisError("Enter a body mass. This DICOM header has no patient weight.")
@@ -499,17 +702,26 @@ def analyze_loaded_study(study: dict[str, Any], body_mass_kg: float | None, pref
         raise StrengthAnalysisError("Body mass must be between 20 and 300 kg.")
     kind = study["kind"]
     if kind == "ct":
-        return analyze_ct_volume(study["volume"], study["spacing_zyx"], mass)
-    if kind == "mri":
-        return analyze_mri_volume(study["volume"], study["spacing_zyx"], mass)
-    if kind == "radiograph":
-        return analyze_radiograph_views(
+        report = analyze_ct_volume(study["volume"], study["spacing_zyx"], mass)
+    elif kind == "mri":
+        report = analyze_mri_volume(study["volume"], study["spacing_zyx"], mass)
+    elif kind == "radiograph":
+        report = analyze_radiograph_views(
             study["views"],
             mass,
             study.get("view_assumed"),
             study.get("radiograph_spacing"),
         )
-    raise StrengthAnalysisError(f"Unsupported scan type: {kind}")
+    else:
+        raise StrengthAnalysisError(f"Unsupported scan type: {kind}")
+    if used_header:
+        report.body_mass_source = "dicom"
+    else:
+        report.body_mass_source = "entered"
+        report.assumptions.append(
+            "Body mass was not taken from the DICOM header. The value entered for this run is not a measured patient weight."
+        )
+    return report
 
 
 def analyze_dicom_path(
