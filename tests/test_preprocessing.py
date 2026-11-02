@@ -21,15 +21,23 @@ def _synthetic_bilateral_full_body_study() -> StudyData:
     volume = np.full(shape, -1000.0, dtype=np.float32)
     z, y, x = np.indices(shape)
 
-    left_femur = (z < 20) & (((x - 34) ** 2 + (y - 48) ** 2) <= 8**2)
-    right_femur = (z < 20) & (((x - 96) ** 2 + (y - 48) ** 2) <= 8**2)
+    # LPS: low column index = patient right, high = patient left.
+    patient_right_femur = (z < 20) & (((x - 34) ** 2 + (y - 48) ** 2) <= 8**2)
+    patient_left_femur = (z < 20) & (((x - 96) ** 2 + (y - 48) ** 2) <= 8**2)
 
-    left_tibia = (z >= 20) & (z < 62) & (((x - 30) ** 2 + (y - 46) ** 2) <= 6**2)
-    left_fibula = (z >= 20) & (z < 62) & (((x - 42) ** 2 + (y - 46) ** 2) <= 4**2)
-    right_tibia = (z >= 20) & (z < 62) & (((x - 88) ** 2 + (y - 46) ** 2) <= 6**2)
-    right_fibula = (z >= 20) & (z < 62) & (((x - 102) ** 2 + (y - 46) ** 2) <= 4**2)
+    patient_right_tibia = (z >= 20) & (z < 62) & (((x - 30) ** 2 + (y - 46) ** 2) <= 6**2)
+    patient_right_fibula = (z >= 20) & (z < 62) & (((x - 42) ** 2 + (y - 46) ** 2) <= 4**2)
+    patient_left_tibia = (z >= 20) & (z < 62) & (((x - 88) ** 2 + (y - 46) ** 2) <= 6**2)
+    patient_left_fibula = (z >= 20) & (z < 62) & (((x - 102) ** 2 + (y - 46) ** 2) <= 4**2)
 
-    volume[left_femur | right_femur | left_tibia | left_fibula | right_tibia | right_fibula] = 950.0
+    volume[
+        patient_right_femur
+        | patient_left_femur
+        | patient_right_tibia
+        | patient_right_fibula
+        | patient_left_tibia
+        | patient_left_fibula
+    ] = 950.0
     return StudyData(
         volume=volume.copy(),
         hu_volume=volume.copy(),
@@ -64,16 +72,26 @@ def _synthetic_bilateral_with_outlier_slice() -> StudyData:
     volume = np.full(shape, -1000.0, dtype=np.float32)
     z, y, x = np.indices(shape)
 
-    left_femur = (z < 20) & (((x - 42) ** 2 + (y - 48) ** 2) <= 8**2)
-    right_femur = (z < 20) & (((x - 150) ** 2 + (y - 48) ** 2) <= 8**2)
+    # LPS: low column index = patient right, high = patient left.
+    patient_right_femur = (z < 20) & (((x - 42) ** 2 + (y - 48) ** 2) <= 8**2)
+    patient_left_femur = (z < 20) & (((x - 150) ** 2 + (y - 48) ** 2) <= 8**2)
 
-    left_tibia = (z >= 20) & (z < 62) & (((x - 40) ** 2 + (y - 46) ** 2) <= 6**2)
-    left_fibula = (z >= 20) & (z < 62) & (((x - 54) ** 2 + (y - 46) ** 2) <= 4**2)
-    right_tibia = (z >= 20) & (z < 62) & (((x - 146) ** 2 + (y - 46) ** 2) <= 6**2)
-    right_fibula = (z >= 20) & (z < 62) & (((x - 160) ** 2 + (y - 46) ** 2) <= 4**2)
-    left_outlier = (z == 38) & (((x - 94) ** 2 + (y - 46) ** 2) <= 5**2)
+    patient_right_tibia = (z >= 20) & (z < 62) & (((x - 40) ** 2 + (y - 46) ** 2) <= 6**2)
+    patient_right_fibula = (z >= 20) & (z < 62) & (((x - 54) ** 2 + (y - 46) ** 2) <= 4**2)
+    patient_left_tibia = (z >= 20) & (z < 62) & (((x - 146) ** 2 + (y - 46) ** 2) <= 6**2)
+    patient_left_fibula = (z >= 20) & (z < 62) & (((x - 160) ** 2 + (y - 46) ** 2) <= 4**2)
+    # Midline speck near the left shaft should not pull the crop across the gap.
+    patient_left_outlier = (z == 38) & (((x - 94) ** 2 + (y - 46) ** 2) <= 5**2)
 
-    volume[left_femur | right_femur | left_tibia | left_fibula | right_tibia | right_fibula | left_outlier] = 950.0
+    volume[
+        patient_right_femur
+        | patient_left_femur
+        | patient_right_tibia
+        | patient_right_fibula
+        | patient_left_tibia
+        | patient_left_fibula
+        | patient_left_outlier
+    ] = 950.0
     return StudyData(
         volume=volume.copy(),
         hu_volume=volume.copy(),
