@@ -95,6 +95,36 @@ def _sort_slices(datasets: Iterable[Any]) -> list[Any]:
     return sorted(list(datasets), key=position)
 
 
+def _series_uid(dataset: Any) -> str:
+    uid = getattr(dataset, "SeriesInstanceUID", None)
+    return str(uid) if uid not in (None, "") else ""
+
+
+def _select_largest_series(datasets: list[Any]) -> list[Any]:
+    grouped: dict[str, list[Any]] = {}
+    for dataset in datasets:
+        grouped.setdefault(_series_uid(dataset), []).append(dataset)
+    if len(grouped) <= 1:
+        return datasets
+    selected = max(grouped.values(), key=lambda series: (len(series), 1 if _series_uid(series[0]) else 0))
+    if len(selected) < 2:
+        raise FileNotFoundError("No multi-slice DICOM series found after splitting by SeriesInstanceUID.")
+    return selected
+
+
+def _require_pixel_spacing(dataset: Any) -> tuple[float, float]:
+    spacing = getattr(dataset, "PixelSpacing", None) or getattr(dataset, "ImagerPixelSpacing", None)
+    if spacing is None:
+        raise ValueError(
+            "PixelSpacing is missing from the DICOM header; refusing to assume 1.0 mm."
+        )
+    spacing_y = float(spacing[0])
+    spacing_x = float(spacing[1])
+    if spacing_y <= 0 or spacing_x <= 0:
+        raise ValueError("PixelSpacing values must be positive.")
+    return spacing_y, spacing_x
+
+
 def _load_with_pydicom(dicom_dir: Path) -> CTVolume:
     if pydicom is None:
         raise ImportError("pydicom is not installed")
@@ -105,6 +135,7 @@ def _load_with_pydicom(dicom_dir: Path) -> CTVolume:
             datasets.append(pydicom.dcmread(str(path), force=True))
         except Exception:
             continue
+    datasets = _select_largest_series(datasets)
     datasets = _sort_slices(datasets)
     if not datasets:
         raise FileNotFoundError(f"No readable DICOM files found in {dicom_dir}")
@@ -118,15 +149,17 @@ def _load_with_pydicom(dicom_dir: Path) -> CTVolume:
         pixel_arrays.append(pixel_array * slope + intercept)
 
     volume = np.stack(pixel_arrays, axis=0)
-    spacing_y = float(getattr(first, "PixelSpacing", [1.0, 1.0])[0])
-    spacing_x = float(getattr(first, "PixelSpacing", [1.0, 1.0])[1])
+    spacing_y, spacing_x = _require_pixel_spacing(first)
     spacing_z = 0.0
     if len(datasets) > 1 and hasattr(datasets[0], "ImagePositionPatient") and hasattr(datasets[1], "ImagePositionPatient"):
         spacing_z = abs(float(datasets[1].ImagePositionPatient[2]) - float(datasets[0].ImagePositionPatient[2]))
     if spacing_z < 1e-6:
-        spacing_z = float(getattr(first, "SliceThickness", 1.0) or 1.0)
+        spacing_z = float(getattr(first, "SliceThickness", 0.0) or 0.0)
     if spacing_z < 1e-6:
-        spacing_z = 1.0
+        raise ValueError(
+            "Slice spacing is missing from ImagePositionPatient and SliceThickness; "
+            "refusing to assume 1.0 mm."
+        )
 
     origin = getattr(first, "ImagePositionPatient", (0.0, 0.0, 0.0))
     direction = tuple(float(v) for v in getattr(first, "ImageOrientationPatient", [1, 0, 0, 0, 1, 0]))
