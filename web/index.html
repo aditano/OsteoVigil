@@ -7,28 +7,30 @@
     <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body>
+    <a class="skip-link" href="#analyze-form">Skip to analysis form</a>
     <header class="top">
       <div>
         <p class="eyebrow">OsteoVigil</p>
         <h1>Tib/fib vertical load</h1>
       </div>
-      <p id="banner" class="banner">
+      <p id="banner" class="banner" role="note">
         Research biomechanical estimate. This is not a diagnosis, not a medical device, and not a clearance to walk.
       </p>
     </header>
     <main>
-      <section class="controls">
+      <section class="controls" aria-labelledby="controls-heading">
+        <h2 id="controls-heading" class="visually-hidden">Analysis controls</h2>
         <form id="analyze-form">
-          <label class="drop" id="drop">
-            <input id="files" type="file" multiple accept=".dcm,.dicom,.zip,application/dicom,application/zip" />
+          <label class="drop" id="drop" for="files">
+            <input id="files" type="file" multiple accept=".dcm,.dicom,.zip,application/dicom,application/zip" aria-describedby="drop-label" />
             <span id="drop-label">Drop a DICOM series, or a zip of one.</span>
           </label>
-          <label class="mass">
+          <label class="mass" for="mass">
             Body mass
             <input id="mass" name="body_mass_kg" type="number" min="20" max="300" step="0.1" value="70" required />
             <span>kg</span>
           </label>
-          <label class="check">
+          <label class="check" for="use-dicom-weight">
             <input id="use-dicom-weight" type="checkbox" checked />
             Use the weight stored in the DICOM header when it is present.
           </label>
@@ -36,7 +38,7 @@
           <p id="engine-note" class="note"></p>
           <div class="status-block">
             <div class="status-row">
-              <p id="status" class="status">Waiting for a study.</p>
+              <p id="status" class="status" aria-live="polite">Waiting for a study.</p>
               <span id="progress-percent" class="progress-percent" hidden>0%</span>
             </div>
             <div
@@ -55,7 +57,7 @@
           </div>
         </form>
       </section>
-      <section id="results" class="results" hidden>
+      <section id="results" class="results" hidden aria-live="polite" aria-atomic="true">
         <p id="modality" class="modality"></p>
         <p id="percent" class="percent"></p>
         <p id="measurement-warning" class="warning" hidden></p>
@@ -64,14 +66,14 @@
         <p id="field" class="note"></p>
         <ul id="assumptions"></ul>
       </section>
-      <section class="views">
+      <section class="views" aria-label="Weakness map projections">
         <figure>
-          <figcaption>AP <span id="ap-state"></span></figcaption>
-          <canvas id="ap" width="480" height="640"></canvas>
+          <figcaption id="ap-caption">AP <span id="ap-state"></span></figcaption>
+          <canvas id="ap" width="480" height="640" role="img" aria-labelledby="ap-caption"></canvas>
         </figure>
         <figure>
-          <figcaption>Lateral <span id="lateral-state"></span></figcaption>
-          <canvas id="lateral" width="480" height="640"></canvas>
+          <figcaption id="lateral-caption">Lateral <span id="lateral-state"></span></figcaption>
+          <canvas id="lateral" width="480" height="640" role="img" aria-labelledby="lateral-caption"></canvas>
         </figure>
       </section>
       <p id="renderer" class="renderer" data-renderer="cpu" data-gpu-match="n/a">Projection renderer: CPU</p>
