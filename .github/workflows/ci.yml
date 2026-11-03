@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest==8.2.2 numpy==1.26.4 scipy==1.11.4 pydicom==2.4.4 PyYAML==6.0.1
+          python -m pip install -e .
+      - name: Run unit tests
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m pytest \
+            tests/test_audit_dicom_io.py \
+            tests/test_leg_laterality.py \
+            tests/test_febio_manager.py \
+            tests/test_preprocessing.py \
+            tests/test_strength_core.py \
+            tests/test_materials.py \
+            tests/test_radiograph_calibration.py \
+            tests/test_dicom_codecs.py \
+            tests/test_fem_solver.py \
+            -q
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install and build web
+        working-directory: web
+        run: npm ci && npm run build

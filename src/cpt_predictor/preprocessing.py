@@ -213,7 +213,12 @@ def _select_leg_crop_bounds(study: StudyData, config: Any) -> StudyData:
     y_margin = max(4, int(np.ceil(crop_margin_mm / study.spacing_zyx[1])))
     z_margin = max(2, int(np.ceil((0.5 * crop_margin_mm) / study.spacing_zyx[0])))
 
-    selected_group_index = 0 if target_leg == "left" else 1
+    # Volume axis 2 follows DICOM row direction (ImageOrientationPatient[0:3]).
+    # In LPS, +X is patient left, so high column index is patient left when
+    # row_dir_x >= 0. Legacy code treated group 0 as "left" (image-left / patient-right).
+    row_dir_x = float(study.direction[0]) if study.direction else 1.0
+    patient_left_group = 1 if row_dir_x >= 0.0 else 0
+    selected_group_index = patient_left_group if target_leg == "left" else 1 - patient_left_group
     selected_groups = [
         groups[selected_group_index] if groups is not None else []
         for groups in slice_groups

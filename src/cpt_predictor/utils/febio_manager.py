@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import tarfile
@@ -121,16 +122,55 @@ def _download_file(url: str, destination: Path) -> Path:
     return destination
 
 
+def _assert_member_inside(destination: Path, member_name: str) -> Path:
+    """Reject absolute paths and .. traversal in archive members."""
+    destination = destination.resolve()
+    # Zip/tar members use forward slashes; reject absolute and drive-letter paths.
+    normalized = member_name.replace("\\", "/")
+    if normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized):
+        raise RuntimeError(f"Archive member escapes destination: {member_name}")
+    target = (destination / normalized).resolve()
+    try:
+        target.relative_to(destination)
+    except ValueError as exc:
+        raise RuntimeError(f"Archive member escapes destination: {member_name}") from exc
+    return target
+
+
+def _safe_extract_zip(archive: zipfile.ZipFile, destination: Path) -> None:
+    for info in archive.infolist():
+        name = info.filename
+        if not name:
+            continue
+        _assert_member_inside(destination, name)
+        archive.extract(info, destination)
+
+
+def _safe_extract_tar(archive: tarfile.TarFile, destination: Path) -> None:
+    members = []
+    for member in archive.getmembers():
+        name = member.name
+        if not name:
+            continue
+        _assert_member_inside(destination, name)
+        members.append(member)
+    # Python 3.12+ data filter blocks link/device escapes after our path check.
+    if getattr(tarfile, "data_filter", None) is not None:
+        archive.extractall(destination, members=members, filter="data")
+    else:  # pragma: no cover - older interpreters
+        archive.extractall(destination, members=members)
+
+
 def _extract_archive(archive_path: Path, destination: Path) -> Path:
     if destination.exists():
         shutil.rmtree(destination)
     destination.mkdir(parents=True, exist_ok=True)
     if archive_path.name.endswith(".zip"):
         with zipfile.ZipFile(archive_path) as archive:
-            archive.extractall(destination)
+            _safe_extract_zip(archive, destination)
     elif archive_path.name.endswith((".tar.gz", ".tgz")):
         with tarfile.open(archive_path, "r:gz") as archive:
-            archive.extractall(destination)
+            _safe_extract_tar(archive, destination)
     else:
         raise RuntimeError(f"Unsupported archive format: {archive_path.name}")
 

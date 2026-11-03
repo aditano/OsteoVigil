@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import zipfile
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
 import pydicom
+from scipy import ndimage as ndi
 
 from .dicom_codecs import COMPRESSED_PIXEL_ERROR, register_dicom_codecs
 from .errors import StrengthAnalysisError
@@ -22,6 +24,9 @@ _UNCOMPRESSED_TRANSFER_SYNTAXES = {
     "1.2.840.10008.1.2.1.99",
     "1.2.840.10008.1.2.2",
 }
+
+# Slice gaps beyond this relative spread are treated as uneven and resampled.
+_UNEVEN_SPACING_RATIO = 1.05
 
 
 def _datasets_from_files(files: Iterable[Path]) -> list[Any]:
@@ -63,11 +68,17 @@ def _pixel_values(dataset: Any) -> np.ndarray:
 
 
 def _pixel_spacing(dataset: Any) -> tuple[float, float]:
-    """CT and MRI spacing. Radiographs use radiograph_pixel_spacing instead."""
-    spacing = getattr(dataset, "PixelSpacing", None) or getattr(dataset, "ImagerPixelSpacing", None)
-    if spacing is None:
-        return (1.0, 1.0)
-    return (float(spacing[0]), float(spacing[1]))
+    """CT and MRI in-plane spacing. Missing tags are an error, not 1 mm."""
+    spacing = _positive_spacing_pair(getattr(dataset, "PixelSpacing", None))
+    if spacing is not None:
+        return spacing
+    spacing = _positive_spacing_pair(getattr(dataset, "ImagerPixelSpacing", None))
+    if spacing is not None:
+        return spacing
+    raise StrengthAnalysisError(
+        "PixelSpacing is missing from the DICOM header. "
+        "Refusing to assume 1.0 mm for CT/MRI strength analysis."
+    )
 
 
 @dataclass(frozen=True)
@@ -164,6 +175,64 @@ def _ordered_datasets(datasets: list[Any]) -> list[Any]:
     return sorted(datasets, key=_slice_sort_key)
 
 
+def _series_uid(dataset: Any) -> str:
+    uid = getattr(dataset, "SeriesInstanceUID", None)
+    if uid in (None, ""):
+        return ""
+    return str(uid)
+
+
+def _select_volume_series(datasets: list[Any]) -> list[Any]:
+    """Keep one SeriesInstanceUID for CT/MRI stacks; mix no scout/localizer series."""
+    if len(datasets) <= 1:
+        return datasets
+    grouped: dict[str, list[Any]] = defaultdict(list)
+    for dataset in datasets:
+        grouped[_series_uid(dataset)].append(dataset)
+    if len(grouped) == 1:
+        return datasets
+
+    def score(series: list[Any]) -> tuple[int, int]:
+        # Prefer the longest multi-slice series; blank UIDs sort last.
+        uid = _series_uid(series[0])
+        return (len(series), 1 if uid else 0)
+
+    selected = max(grouped.values(), key=score)
+    if len(selected) < 2:
+        raise StrengthAnalysisError(
+            "No multi-slice DICOM series was found after splitting by SeriesInstanceUID."
+        )
+    return selected
+
+
+def _resample_uneven_volume(
+    volume: np.ndarray,
+    positions: np.ndarray,
+) -> tuple[np.ndarray, float]:
+    """Rebuild a uniform Z grid from irregular ImagePositionPatient samples."""
+    order = np.argsort(positions)
+    positions = np.asarray(positions, dtype=float)[order]
+    volume = np.asarray(volume, dtype=np.float32)[order]
+    diffs = np.diff(positions)
+    positive = diffs[np.abs(diffs) > 1.0e-4]
+    if positive.size == 0:
+        raise StrengthAnalysisError("Slice ImagePositionPatient values do not define a Z spacing.")
+    target = float(np.median(np.abs(positive)))
+    if target <= 1.0e-6:
+        raise StrengthAnalysisError("Computed slice spacing is not positive.")
+    span = float(abs(positions[-1] - positions[0]))
+    count = max(2, int(round(span / target)) + 1)
+    target_z = np.linspace(positions[0], positions[-1], count)
+    source_index = np.interp(target_z, positions, np.arange(positions.size, dtype=float))
+    coords = np.empty((3, count, volume.shape[1], volume.shape[2]), dtype=np.float64)
+    coords[0] = source_index[:, None, None]
+    coords[1] = np.arange(volume.shape[1], dtype=np.float64)[None, :, None]
+    coords[2] = np.arange(volume.shape[2], dtype=np.float64)[None, None, :]
+    resampled = ndi.map_coordinates(volume, coords, order=1, mode="nearest")
+    spacing_z = float(abs(target_z[1] - target_z[0])) if count > 1 else target
+    return resampled.astype(np.float32), spacing_z
+
+
 def _volume_from_pixels(
     pixels: list[np.ndarray],
     ordered: list[Any],
@@ -175,18 +244,50 @@ def _volume_from_pixels(
             raise StrengthAnalysisError("The DICOM series mixes 2D and 3D images.")
         volume = np.stack(pixels, axis=0)
     spacing_y, spacing_x = _pixel_spacing(ordered[0])
-    spacing_z = float(getattr(ordered[0], "SliceThickness", 1.0) or 1.0)
     positions = []
     for dataset in ordered:
         position = getattr(dataset, "ImagePositionPatient", None)
         if position is not None and len(position) >= 3:
             positions.append(float(position[2]))
+    spacing_z: float | None = None
     if len(positions) >= 2:
-        diffs = np.abs(np.diff(np.asarray(positions, dtype=float)))
-        diffs = diffs[diffs > 1.0e-4]
-        if diffs.size:
-            spacing_z = float(np.median(diffs))
-    return volume.astype(np.float32), (spacing_z, spacing_y, spacing_x)
+        position_array = np.asarray(positions, dtype=float)
+        order = np.argsort(position_array)
+        ordered_positions = position_array[order]
+        diffs = np.diff(ordered_positions)
+        positive = np.abs(diffs)
+        positive = positive[positive > 1.0e-4]
+        if positive.size == 0:
+            raise StrengthAnalysisError(
+                "Slice ImagePositionPatient values are missing or identical; "
+                "refusing to assume 1.0 mm slice spacing."
+            )
+        median = float(np.median(positive))
+        uneven = bool(
+            float(np.max(positive) / median) > _UNEVEN_SPACING_RATIO
+            or float(np.min(positive) / median) < (1.0 / _UNEVEN_SPACING_RATIO)
+        )
+        if uneven:
+            if volume.ndim != 3 or volume.shape[0] != len(positions):
+                raise StrengthAnalysisError("Uneven slice spacing could not be resampled.")
+            volume = volume[order]
+            volume, spacing_z = _resample_uneven_volume(volume, ordered_positions)
+        else:
+            volume = volume[order]
+            spacing_z = median
+    if spacing_z is None:
+        raw_thickness = getattr(ordered[0], "SliceThickness", None)
+        try:
+            thickness = float(raw_thickness) if raw_thickness not in (None, "") else float("nan")
+        except (TypeError, ValueError):
+            thickness = float("nan")
+        if not np.isfinite(thickness) or thickness <= 0:
+            raise StrengthAnalysisError(
+                "Slice spacing is missing from ImagePositionPatient and SliceThickness. "
+                "Refusing to assume 1.0 mm for CT/MRI strength analysis."
+            )
+        spacing_z = thickness
+    return volume.astype(np.float32), (float(spacing_z), spacing_y, spacing_x)
 
 
 def _classify_datasets(datasets: list[Any]) -> ModalityAssessment:
@@ -199,13 +300,27 @@ def _classify_datasets(datasets: list[Any]) -> ModalityAssessment:
     )
 
 
+def _safe_extract_zip(archive: zipfile.ZipFile, destination: Path) -> None:
+    destination = destination.resolve()
+    for info in archive.infolist():
+        name = info.filename
+        if not name or name.endswith("/"):
+            continue
+        target = (destination / name).resolve()
+        try:
+            target.relative_to(destination)
+        except ValueError as exc:
+            raise StrengthAnalysisError(f"Refusing to extract unsafe zip member: {name}") from exc
+        archive.extract(info, destination)
+
+
 def resolve_dicom_datasets(path: Path) -> list[Any]:
     path = Path(path)
     if path.is_file() and path.suffix.lower() == ".zip":
         extract_root = path.parent / f"{path.stem}_unzipped"
         extract_root.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(path) as archive:
-            archive.extractall(extract_root)
+            _safe_extract_zip(archive, extract_root)
         path = extract_root
     files = sorted(path.rglob("*")) if path.is_dir() else [path]
     datasets = _datasets_from_files(files)
@@ -226,11 +341,17 @@ class StudyDecoder:
         if not self.header.supported or self.header.kind is None:
             raise StrengthAnalysisError(self.header.detail, modality="unknown")
         self.kind = self.header.kind
-        self.weight = _patient_weight_kg(datasets)
         if self.kind == "radiograph":
-            self._datasets = list(datasets)
+            selected = list(datasets)
         else:
-            self._datasets = _ordered_datasets(datasets)
+            selected = _select_volume_series(datasets)
+            self.header = _classify_datasets(selected)
+            if not self.header.supported or self.header.kind is None:
+                raise StrengthAnalysisError(self.header.detail, modality="unknown")
+            self.kind = self.header.kind
+            selected = _ordered_datasets(selected)
+        self.weight = _patient_weight_kg(selected)
+        self._datasets = selected
         self._index = 0
         self._views: dict[str, tuple[np.ndarray, tuple[float, float]]] = {}
         self._assumed: dict[str, bool] = {}
